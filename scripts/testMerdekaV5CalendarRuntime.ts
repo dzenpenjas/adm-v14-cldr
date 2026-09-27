@@ -736,20 +736,30 @@ runTest('BE. Draft only: Applying online candidate updates draft states without 
 });
 
 // -----------------------------------------------------------------------------
-// TEST CV: UI National auto apply (no manual click requirement)
+// TEST DE: Generate Kalender does NOT trigger saveAcademicCalendarV5
 // -----------------------------------------------------------------------------
-runTest('CV. UI National auto apply projects National Base directly to draft without manual click', () => {
+runTest('DE. Generate Kalender button updates draft states without triggering V5 storage persistence', () => {
+  const match = tpmSource.match(/const handleGenerateEffectiveCalendar = \([\s\S]*?\n  \};/);
+  assert.ok(match, 'handleGenerateEffectiveCalendar function must exist');
+  const fnBody = match[0];
+
   assert.ok(
-    tpmSource.includes('projectNationalBaseToSemesterDraft({'),
-    'TimePlanningManager must invoke projectNationalBaseToSemesterDraft automatically'
+    !fnBody.includes('onSaveCalendar('),
+    'handleGenerateEffectiveCalendar MUST NOT call onSaveCalendar (remains draft only)'
+  );
+});
+
+// -----------------------------------------------------------------------------
+// TEST DF: Kurikulum Merdeka does NOT compare annual ATP directly with semester JP
+// -----------------------------------------------------------------------------
+runTest('DF. Kurikulum Merdeka displays "Alokasi ATP ke semester belum disusun." without annual ATP discrepancy conclusion', () => {
+  assert.ok(
+    tpmSource.includes('Alokasi ATP ke semester belum disusun.'),
+    'TimePlanningManager must display "Alokasi ATP ke semester belum disusun." for Kurikulum Merdeka'
   );
   assert.ok(
-    tpmSource.includes('Acuan Nasional — Diterapkan Otomatis'),
-    'TimePlanningManager must display "Acuan Nasional — Diterapkan Otomatis" for NATIONAL level'
-  );
-  assert.ok(
-    tpmSource.includes('Diterapkan Otomatis'),
-    'TimePlanningManager must display "Diterapkan Otomatis" badge for NATIONAL candidate'
+    tpmSource.includes('isK13Curriculum && jpDifference !== null && jpDifference < 0'),
+    'Discrepancy warnings must be restricted to K13 curriculum'
   );
 });
 

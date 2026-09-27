@@ -490,7 +490,7 @@ export type CalendarResolutionStatus =
   | 'INVALID_SEMESTER'
   | 'UNVERIFIED_SOURCE';
 
-export type CalendarLayerType = 'REGIONAL_BASE' | 'NATIONAL_OVERLAY' | 'SCHOOL_OVERRIDE' | 'MANUAL';
+export type CalendarLayerType = 'REGIONAL_BASE' | 'NATIONAL_OVERLAY' | 'SCHOOL_OVERRIDE' | 'MANUAL' | 'GENERATED_EFFECTIVE_BASELINE';
 
 export interface CalendarProvenance {
   sourceType: CalendarSourceType;
@@ -527,6 +527,7 @@ export type CalendarSourceType =
   | 'IMPORTED'
   | 'LEGACY'
   | 'UNVERIFIED'
+  | 'GENERATED_EFFECTIVE_BASELINE'
   // Legacy compatibility aliases
   | 'REGIONAL_CALENDAR'
   | 'SCHOOL_CALENDAR';

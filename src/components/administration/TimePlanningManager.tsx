@@ -26,7 +26,9 @@ import {
   resetCalendarToOfficial,
   projectCandidateEventsToCalendarDays,
   projectNationalBaseToSemesterDraft,
+  generateEffectiveCalendarDays,
 } from '../../services/calendarResolver';
+import { resolvePlanningBaseline } from '../../data/calendar/planningBaselines';
 import {
   generateKalenderAkademik,
   generateAlokasiWaktu,
@@ -170,7 +172,7 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
       ? Number(academicSetting.subjectWeeklyJP)
       : academicSetting.totalHoursPerWeek !== undefined && academicSetting.totalHoursPerWeek !== null
       ? Number(academicSetting.totalHoursPerWeek)
-      : officialRule.weeklyJP ?? null;
+      : null;
 
   const [jpPerWeek, setJpPerWeek] = useState<number | null>(initialJP);
 
@@ -361,18 +363,44 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
 
         if (candidateLevel === 'NATIONAL') {
           const activeSem = semester === '2' || semester === 2 ? 2 : 1;
+          const baseline = resolvePlanningBaseline({
+            academicYear: academicSetting.academicYear || academicYear,
+            semester: semester || '1',
+            province: searchProvince || selectedProvince || school?.province,
+          });
+
+          let targetStart = startDate;
+          if (!targetStart) {
+            targetStart = baseline.startDate;
+            setStartDate(baseline.startDate);
+          }
+
+          let targetEnd = endDate;
+          if (!targetEnd) {
+            targetEnd = baseline.endDate;
+            setEndDate(baseline.endDate);
+          }
+
+          let targetDays = schoolDaysPerWeek;
+          if (!targetDays || (targetDays !== 5 && targetDays !== 6)) {
+            targetDays = baseline.schoolDaysPerWeek;
+            setSchoolDaysPerWeek(baseline.schoolDaysPerWeek);
+          }
+
           setSourceType('NATIONAL_HOLIDAY_OVERLAY');
           setSourceName('Acuan Nasional (SKB 3 Menteri)');
           setSourceAuthority(onlineRes.selectedSource.authority);
           setSourceDocumentNumber(onlineRes.selectedSource.documentNumber || '');
           setSourceUrl(onlineRes.selectedSource.sourceUrl);
 
-          const projectedDays = projectNationalBaseToSemesterDraft({
-            candidate: onlineRes.selectedSource,
-            academicYear: academicSetting.academicYear || academicYear || onlineRes.selectedSource.academicYear,
-            semester: semester || '1',
+          const projectedDays = generateEffectiveCalendarDays({
+            startDate: targetStart,
+            endDate: targetEnd,
+            schoolDaysPerWeek: targetDays,
             calendarId: calendar?.id || `cal-${academicSetting.id}`,
+            academicYear: academicSetting.academicYear || academicYear || onlineRes.selectedSource.academicYear,
             existingDays: days,
+            candidate: onlineRes.selectedSource,
           });
           setDays(projectedDays);
 
@@ -452,6 +480,29 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
         // 3. NATIONAL BASE DETERMINISTIC FALLBACK (when both online search and local regional cache fail)
         const natCandidate = buildNationalBaseCandidate(academicYear);
         const activeSem = semester === '2' || semester === 2 ? 2 : 1;
+        const baseline = resolvePlanningBaseline({
+          academicYear: academicSetting.academicYear || academicYear,
+          semester: semester || '1',
+          province: searchProvince || selectedProvince || school?.province,
+        });
+
+        let targetStart = startDate;
+        if (!targetStart) {
+          targetStart = baseline.startDate;
+          setStartDate(baseline.startDate);
+        }
+
+        let targetEnd = endDate;
+        if (!targetEnd) {
+          targetEnd = baseline.endDate;
+          setEndDate(baseline.endDate);
+        }
+
+        let targetDays = schoolDaysPerWeek;
+        if (!targetDays || (targetDays !== 5 && targetDays !== 6)) {
+          targetDays = baseline.schoolDaysPerWeek;
+          setSchoolDaysPerWeek(baseline.schoolDaysPerWeek);
+        }
 
         setOnlineDiscovery(natCandidate);
         setSourceType('NATIONAL_HOLIDAY_OVERLAY');
@@ -460,12 +511,14 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
         setSourceDocumentNumber(natCandidate.documentNumber || '');
         setSourceUrl(natCandidate.sourceUrl);
 
-        const projectedDays = projectNationalBaseToSemesterDraft({
-          candidate: natCandidate,
-          academicYear: academicSetting.academicYear || academicYear || natCandidate.academicYear,
-          semester: semester || '1',
+        const projectedDays = generateEffectiveCalendarDays({
+          startDate: targetStart,
+          endDate: targetEnd,
+          schoolDaysPerWeek: targetDays,
           calendarId: calendar?.id || `cal-${academicSetting.id}`,
+          academicYear: academicSetting.academicYear || academicYear || natCandidate.academicYear,
           existingDays: days,
+          candidate: natCandidate,
         });
         setDays(projectedDays);
 
@@ -573,6 +626,37 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
 
     setSaveNotification('Penyesuaian diterapkan sebagai draf. Klik "Konfirmasi Kalender" untuk menyimpan.');
     setTimeout(() => setSaveNotification(null), 3000);
+  };
+
+  const handleGenerateEffectiveCalendar = () => {
+    if (!startDate || !endDate || !(schoolDaysPerWeek === 5 || schoolDaysPerWeek === 6)) return;
+
+    const generatedDays = generateEffectiveCalendarDays({
+      startDate,
+      endDate,
+      schoolDaysPerWeek,
+      calendarId: calendar?.id || `cal-${academicSetting.id}`,
+      academicYear: academicSetting.academicYear || academicYear,
+      existingDays: days,
+      candidate: onlineDiscovery || undefined,
+    });
+
+    setDays(generatedDays);
+
+    if (!onlineDiscovery || onlineDiscovery.sourceLevel === 'NATIONAL') {
+      setWorkflowStatus('REVIEWED');
+      setResolutionStatus('PARTIALLY_RESOLVED');
+      setResolutionMessage(
+        'Kalender kerja berhasil dibuat dari Default Perencanaan 2026/2027 dan Acuan Nasional. Silakan sesuaikan jika sekolah memiliki Kalender Pendidikan daerah yang lebih spesifik.'
+      );
+    } else {
+      setWorkflowStatus('REVIEWED');
+      setResolutionStatus('RESOLVED');
+      setResolutionMessage('Kalender kerja berhasil dibuat dari sumber terverifikasi.');
+    }
+
+    setSaveNotification('Kalender kerja berhasil digenerate dan Hari/Minggu Efektif telah dihitung!');
+    setTimeout(() => setSaveNotification(null), 3500);
   };
 
   // Step 4: CONFIRM
@@ -1272,7 +1356,7 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
             <span className="text-[11px] text-indigo-600/80 font-medium">
               {effectiveWeeks !== null && jpPerWeek !== null
                 ? `${effectiveWeeks} pekan × ${jpPerWeek} JP/pekan`
-                : 'Menunggu kelengkapan data'}
+                : 'Menunggu pengaturan JP/minggu aktual.'}
             </span>
           </div>
 
@@ -1290,7 +1374,7 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
 
           <div
             className={`border rounded-xl p-4 ${
-              jpDifference === null
+              !isK13Curriculum || jpDifference === null
                 ? 'bg-slate-50 border-slate-200'
                 : jpDifference < 0
                 ? 'bg-amber-50 border-amber-200'
@@ -1300,35 +1384,39 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
             <span className="text-xs font-medium text-slate-600 block">Analisis Selisih Jam</span>
             <span
               className={`text-xl font-bold mt-1 block ${
-                jpDifference === null
+                !isK13Curriculum || jpDifference === null
                   ? 'text-slate-500'
                   : jpDifference < 0
                   ? 'text-amber-700'
                   : 'text-emerald-700'
               }`}
             >
-              {jpDifference === null
-                ? 'Belum Dihitung'
-                : jpDifference === 0
-                ? 'Tepat Sesuai (0 JP)'
-                : jpDifference > 0
-                ? `+${jpDifference} JP Fleksibel`
-                : `${jpDifference} JP Defisit`}
+              {isK13Curriculum
+                ? (jpDifference === null
+                    ? 'Belum Dihitung'
+                    : jpDifference === 0
+                    ? 'Tepat Sesuai (0 JP)'
+                    : jpDifference > 0
+                    ? `+${jpDifference} JP Fleksibel`
+                    : `${jpDifference} JP Defisit`)
+                : 'Belum Dihitung'}
             </span>
             <span className="text-xs text-slate-500">
-              {jpDifference === null
-                ? 'Lengkapi konfigurasi kalender & JP'
-                : jpDifference === 0
-                ? 'Alokasi waktu pas dan terdistribusi'
-                : jpDifference > 0
-                ? 'Tersedia jam untuk penguatan / cadangan'
-                : 'Jam materi melebihi waktu efektif'}
+              {isK13Curriculum
+                ? (jpDifference === null
+                    ? 'Lengkapi konfigurasi kalender & JP'
+                    : jpDifference === 0
+                    ? 'Alokasi waktu pas dan terdistribusi'
+                    : jpDifference > 0
+                    ? 'Tersedia jam untuk penguatan / cadangan'
+                    : 'Jam materi melebihi waktu efektif')
+                : 'Alokasi ATP ke semester belum disusun.'}
             </span>
           </div>
         </div>
 
-        {/* Detailed Explanation / Warning if discrepancy exists */}
-        {jpDifference !== null && jpDifference < 0 && (
+        {/* Detailed Explanation / Warning if discrepancy exists (K13 only) */}
+        {isK13Curriculum && jpDifference !== null && jpDifference < 0 && (
           <div className="mt-4 p-3.5 bg-amber-50 border border-amber-300 rounded-xl flex items-start gap-3 text-amber-900 text-xs">
             <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
             <div>
@@ -1341,7 +1429,7 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
           </div>
         )}
 
-        {jpDifference !== null && jpDifference > 0 && (
+        {isK13Curriculum && jpDifference !== null && jpDifference > 0 && (
           <div className="mt-4 p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl flex items-start gap-2.5 text-emerald-900 text-xs">
             <Info className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
             <div>
@@ -1479,11 +1567,9 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
                 </div>
               </div>
 
-              {!startDate && !endDate && (
-                <p className="text-[11px] text-slate-500 italic">
-                  Tanggal diisi manual karena sumber kalender resmi belum berhasil ditemukan atau belum diterapkan.
-                </p>
-              )}
+              <p className="text-[11px] text-slate-500 italic mt-1">
+                Default Perencanaan 2026/2027 — dapat disesuaikan dengan Kalender Pendidikan daerah/sekolah.
+              </p>
 
               <div>
                 <div className="flex items-center justify-between mb-1">
@@ -1528,10 +1614,21 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
               )}
 
               <button
+                id="btn-generate-effective-calendar"
+                type="button"
+                disabled={!startDate || !endDate || !(schoolDaysPerWeek === 5 || schoolDaysPerWeek === 6)}
+                onClick={handleGenerateEffectiveCalendar}
+                className="w-full mt-2 inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 text-white text-xs font-bold rounded-lg shadow-xs transition-colors cursor-pointer"
+              >
+                <RefreshCw className="w-4 h-4" />
+                <span>Generate Kalender &amp; Hitung Efektif</span>
+              </button>
+
+              <button
                 id="btn-save-calendar-config"
                 type="button"
                 onClick={() => handleApplyOverride()}
-                className="w-full mt-2 inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-700 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg shadow-xs transition-colors cursor-pointer"
+                className="w-full mt-1.5 inline-flex items-center justify-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg shadow-xs transition-colors cursor-pointer"
               >
                 <Save className="w-4 h-4" />
                 <span>Terapkan Penyesuaian sebagai Draf</span>

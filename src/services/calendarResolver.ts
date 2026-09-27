@@ -760,6 +760,198 @@ export function projectCandidateEventsToCalendarDays(
   return Array.from(daysMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 }
 
+export interface GenerateEffectiveCalendarDaysParams {
+  startDate: string;
+  endDate: string;
+  schoolDaysPerWeek: number;
+  calendarId: string;
+  academicYear?: string;
+  existingDays?: CalendarDay[];
+  candidate?: CalendarSourceCandidate;
+}
+
+/**
+ * Generates effective learning calendar days for scheduled school days within active semester range.
+ * Overlays Regional events (if available) and National Holidays / Cuti Bersama.
+ * Priority: SCHOOL_OVERRIDE > REGIONAL_BASE > NATIONAL_OVERLAY > GENERATED_EFFECTIVE_BASELINE
+ */
+export function generateEffectiveCalendarDays(
+  params: GenerateEffectiveCalendarDaysParams
+): CalendarDay[] {
+  const { startDate, endDate, schoolDaysPerWeek, calendarId, academicYear, existingDays, candidate } = params;
+
+  if (!startDate || !endDate || isNaN(new Date(startDate).getTime()) || isNaN(new Date(endDate).getTime()) || startDate > endDate) {
+    return existingDays || [];
+  }
+
+  const normYear = academicYear || '2026/2027';
+  const nowIso = new Date().toISOString();
+  const daysMap = new Map<string, CalendarDay>();
+
+  // 1. Generate effective learning baseline for scheduled school days
+  const rangeDates = getDateRangeArray(startDate, endDate);
+  for (const dStr of rangeDates) {
+    const dateObj = new Date(dStr);
+    const dayOfWeek = dateObj.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+
+    const isSchoolDay = schoolDaysPerWeek === 6 ? (dayOfWeek >= 1 && dayOfWeek <= 6) : (dayOfWeek >= 1 && dayOfWeek <= 5);
+
+    if (isSchoolDay) {
+      daysMap.set(dStr, {
+        id: `day-eff-${dStr}`,
+        academicCalendarId: calendarId,
+        date: dStr,
+        status: 'effective',
+        notes: 'Hari Efektif Belajar',
+        sourceType: 'GENERATED_EFFECTIVE_BASELINE',
+        sourceLayer: 'GENERATED_EFFECTIVE_BASELINE',
+        category: 'OTHER',
+      });
+    }
+  }
+
+  // 2. Overlay regional candidate events if available
+  if (candidate && Array.isArray(candidate.events)) {
+    const regProv: CalendarProvenance = {
+      sourceType: 'REGIONAL_EDUCATION_CALENDAR',
+      sourceName: candidate.documentTitle,
+      sourceAuthority: candidate.authority,
+      sourceUrl: candidate.sourceUrl,
+      region: candidate.province || 'Daerah',
+      academicYear: candidate.academicYear,
+      documentNumber: candidate.documentNumber,
+      documentTitle: candidate.documentTitle,
+      publicationDate: candidate.publicationDate,
+      effectiveDate: candidate.effectiveDate,
+      retrievedAt: nowIso,
+    };
+
+    for (const ev of candidate.events) {
+      const evEnd = ev.endDate && ev.endDate >= ev.startDate ? ev.endDate : ev.startDate;
+      const evDates = getDateRangeArray(ev.startDate, evEnd);
+
+      let mappedStatus: CalendarDay['status'] = 'other';
+      let mappedCategory: CalendarDay['category'] = 'OTHER';
+
+      switch (ev.category) {
+        case 'HOLIDAY':
+          mappedStatus = 'holiday';
+          mappedCategory = 'OTHER';
+          break;
+        case 'SEMESTER_BREAK':
+          mappedStatus = 'BREAK';
+          mappedCategory = 'SEMESTER_BREAK';
+          break;
+        case 'MID_SEMESTER_BREAK':
+          mappedStatus = 'BREAK';
+          mappedCategory = 'MID_SEMESTER_BREAK';
+          break;
+        case 'ASSESSMENT':
+          mappedStatus = 'ASSESSMENT';
+          mappedCategory = 'ASSESSMENT';
+          break;
+        case 'SCHOOL_EVENT':
+          mappedStatus = 'SCHOOL_EVENT';
+          mappedCategory = 'SCHOOL_EVENT';
+          break;
+        default:
+          mappedStatus = 'other';
+          mappedCategory = 'OTHER';
+          break;
+      }
+
+      for (const dStr of evDates) {
+        if (dStr >= startDate && dStr <= endDate) {
+          daysMap.set(dStr, {
+            id: `day-reg-${dStr}`,
+            academicCalendarId: calendarId,
+            date: dStr,
+            status: mappedStatus,
+            notes: ev.name,
+            sourceType: 'REGIONAL_EDUCATION_CALENDAR',
+            sourceName: candidate.documentTitle,
+            sourceAuthority: candidate.authority,
+            sourceDocumentNumber: candidate.documentNumber || undefined,
+            sourceUrl: candidate.sourceUrl,
+            sourceLayer: 'REGIONAL_BASE',
+            sourceProvenances: [regProv],
+            category: mappedCategory,
+          });
+        }
+      }
+    }
+  }
+
+  // 3. Overlay National Holidays & Cuti Bersama
+  for (const holiday of OFFICIAL_NATIONAL_HOLIDAYS) {
+    if (holiday.date >= startDate && holiday.date <= endDate) {
+      const eventYear = holiday.year || parseInt(holiday.date.slice(0, 4), 10);
+      const natSource = OFFICIAL_NATIONAL_HOLIDAY_SOURCES[eventYear];
+      const isNatSourceVerified =
+        natSource &&
+        natSource.verificationState === 'VERIFIED' &&
+        Boolean(natSource.documentNumber) &&
+        Boolean(natSource.documentTitle) &&
+        Boolean(natSource.sourceUrl) &&
+        Boolean(natSource.verifiedAt);
+
+      if (!isNatSourceVerified) continue;
+
+      const currentDay = daysMap.get(holiday.date);
+      if (currentDay && currentDay.sourceLayer === 'REGIONAL_BASE') {
+        continue;
+      }
+
+      const holidayDocNumber = natSource.documentNumber;
+      const holidayDocTitle = natSource.documentTitle;
+      const holidayAuthority = natSource.authority;
+      const holidayUrl = natSource.sourceUrl;
+
+      const holidayProvenance: CalendarProvenance = {
+        sourceType: 'NATIONAL_HOLIDAY_OVERLAY',
+        sourceName: holidayDocTitle,
+        sourceAuthority: holidayAuthority,
+        sourceUrl: holidayUrl,
+        region: 'Nasional',
+        academicYear: normYear,
+        documentNumber: holidayDocNumber,
+        documentTitle: holidayDocTitle,
+        publicationDate: natSource.publicationDate,
+        effectiveDate: natSource.signedDate || natSource.publicationDate,
+        retrievedAt: nowIso,
+        checksumOrDate: natSource.verifiedAt,
+      };
+
+      daysMap.set(holiday.date, {
+        id: `day-nat-${holiday.date}`,
+        academicCalendarId: calendarId,
+        date: holiday.date,
+        status: holiday.type === 'CUTI_BERSAMA' ? 'BREAK' : 'holiday',
+        notes: holiday.name,
+        sourceType: 'NATIONAL_HOLIDAY_OVERLAY',
+        sourceName: holidayDocNumber,
+        sourceAuthority: holidayAuthority,
+        sourceDocumentNumber: holidayDocNumber,
+        sourceUrl: holidayUrl,
+        sourceLayer: 'NATIONAL_OVERLAY',
+        sourceProvenances: [holidayProvenance],
+        category: holiday.type === 'CUTI_BERSAMA' ? 'CUTI_BERSAMA' : 'NATIONAL_HOLIDAY',
+      });
+    }
+  }
+
+  // 4. Manual Override Priority (SCHOOL_OVERRIDE > everything)
+  if (Array.isArray(existingDays)) {
+    for (const d of existingDays) {
+      if (d.sourceLayer === 'SCHOOL_OVERRIDE' || d.sourceType === 'SCHOOL_OVERRIDE' || d.isOverridden) {
+        daysMap.set(d.date, d);
+      }
+    }
+  }
+
+  return Array.from(daysMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+}
+
 export interface ProjectNationalBaseParams {
   candidate?: CalendarSourceCandidate;
   academicYear?: string;

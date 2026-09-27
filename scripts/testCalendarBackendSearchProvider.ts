@@ -34,9 +34,12 @@ import {
 import {
   projectCandidateEventsToCalendarDays,
   projectNationalBaseToSemesterDraft,
+  generateEffectiveCalendarDays,
   confirmCalendarWorkflow,
 } from '../src/services/calendarResolver';
 import { OFFICIAL_NATIONAL_HOLIDAYS } from '../src/data/calendar/nationalHolidays';
+import { resolvePlanningBaseline } from '../src/data/calendar/planningBaselines';
+import { calculateEffectiveDays, calculateEffectiveWeeks } from '../src/services/jpEngine';
 
 console.log('=== RUNNING AUDIT: BACKEND CALENDAR ONLINE SEARCH PROVIDER ===\n');
 
@@ -3528,6 +3531,167 @@ async function main() {
     assert.ok(targetDay, 'Day on 2026-08-17 must exist');
     assert.strictEqual(targetDay.sourceType, 'SCHOOL_OVERRIDE', 'SCHOOL_OVERRIDE must win over national base overlay');
     assert.strictEqual(targetDay.notes, 'Upacara Mandiri Sekolah');
+  });
+
+  // =========================================================================
+  // TEST CW: Planning Baseline Semester 1 (2026/2027)
+  // =========================================================================
+  await runTest('CW. Planning Baseline for 2026/2027 Semester 1 returns 2026-07-13 to 2026-12-18 and 5 days/week', () => {
+    const base = resolvePlanningBaseline({ academicYear: '2026/2027', semester: '1' });
+    assert.strictEqual(base.startDate, '2026-07-13');
+    assert.strictEqual(base.endDate, '2026-12-18');
+    assert.strictEqual(base.schoolDaysPerWeek, 5);
+  });
+
+  // =========================================================================
+  // TEST CX: Planning Baseline Semester 2 (2026/2027)
+  // =========================================================================
+  await runTest('CX. Planning Baseline for 2026/2027 Semester 2 returns 2027-01-04 to 2027-06-18 and 5 days/week', () => {
+    const base = resolvePlanningBaseline({ academicYear: '2026/2027', semester: '2' });
+    assert.strictEqual(base.startDate, '2027-01-04');
+    assert.strictEqual(base.endDate, '2027-06-18');
+    assert.strictEqual(base.schoolDaysPerWeek, 5);
+  });
+
+  // =========================================================================
+  // TEST CY: Generate Weekdays for 5-day mode
+  // =========================================================================
+  await runTest('CY. generateEffectiveCalendarDays in 5-day mode generates Mon-Fri as effective, excluding Sat and Sun', () => {
+    const base = resolvePlanningBaseline({ academicYear: '2026/2027', semester: '1' });
+    const days = generateEffectiveCalendarDays({
+      startDate: base.startDate,
+      endDate: base.endDate,
+      schoolDaysPerWeek: 5,
+      calendarId: 'cal-cw',
+      academicYear: '2026/2027',
+    });
+
+    assert.ok(days.length > 20, 'Generated days should contain full semester weekdays');
+
+    // Check ordinary Monday (2026-07-20)
+    const mon = days.find((d) => d.date === '2026-07-20');
+    assert.ok(mon, '2026-07-20 (Monday) must exist');
+    assert.strictEqual(mon.status, 'effective');
+    assert.strictEqual(mon.sourceLayer, 'GENERATED_EFFECTIVE_BASELINE');
+
+    // Saturday 2026-07-25 must not exist
+    const sat = days.find((d) => d.date === '2026-07-25');
+    assert.strictEqual(sat, undefined, 'Saturday must NOT be generated in 5-day mode');
+
+    // Sunday 2026-07-26 must not exist
+    const sun = days.find((d) => d.date === '2026-07-26');
+    assert.strictEqual(sun, undefined, 'Sunday must NOT be generated');
+  });
+
+  // =========================================================================
+  // TEST CZ: Generate Weekdays for 6-day mode
+  // =========================================================================
+  await runTest('CZ. generateEffectiveCalendarDays in 6-day mode generates Mon-Sat as effective, excluding Sun', () => {
+    const base = resolvePlanningBaseline({ academicYear: '2026/2027', semester: '1' });
+    const days = generateEffectiveCalendarDays({
+      startDate: base.startDate,
+      endDate: base.endDate,
+      schoolDaysPerWeek: 6,
+      calendarId: 'cal-cz',
+      academicYear: '2026/2027',
+    });
+
+    const sat = days.find((d) => d.date === '2026-07-25');
+    assert.ok(sat, 'Saturday 2026-07-25 MUST exist in 6-day mode');
+    assert.strictEqual(sat.status, 'effective');
+
+    const sun = days.find((d) => d.date === '2026-07-26');
+    assert.strictEqual(sun, undefined, 'Sunday 2026-07-26 must NOT exist in 6-day mode');
+  });
+
+  // =========================================================================
+  // TEST DA: National Overlay Wins over Effective Baseline
+  // =========================================================================
+  await runTest('DA. National holiday (2026-08-17) overlays generated weekday and changes status to holiday', () => {
+    const base = resolvePlanningBaseline({ academicYear: '2026/2027', semester: '1' });
+    const days = generateEffectiveCalendarDays({
+      startDate: base.startDate,
+      endDate: base.endDate,
+      schoolDaysPerWeek: 5,
+      calendarId: 'cal-da',
+      academicYear: '2026/2027',
+    });
+
+    const aug17 = days.find((d) => d.date === '2026-08-17');
+    assert.ok(aug17, '2026-08-17 must exist');
+    assert.strictEqual(aug17.status, 'holiday', '2026-08-17 must be holiday');
+    assert.strictEqual(aug17.sourceLayer, 'NATIONAL_OVERLAY');
+  });
+
+  // =========================================================================
+  // TEST DB: Cuti Bersama Wins over Effective Baseline
+  // =========================================================================
+  await runTest('DB. Cuti bersama (2026-12-24) overlays generated weekday and sets category CUTI_BERSAMA', () => {
+    const base = resolvePlanningBaseline({ academicYear: '2026/2027', semester: '1' });
+    const days = generateEffectiveCalendarDays({
+      startDate: base.startDate,
+      endDate: '2026-12-31',
+      schoolDaysPerWeek: 5,
+      calendarId: 'cal-db',
+      academicYear: '2026/2027',
+    });
+
+    const dec24 = days.find((d) => d.date === '2026-12-24');
+    assert.ok(dec24, '2026-12-24 must exist');
+    assert.strictEqual(dec24.status, 'BREAK', 'Cuti bersama status must be BREAK');
+    assert.strictEqual(dec24.category, 'CUTI_BERSAMA', 'Cuti bersama category must be CUTI_BERSAMA');
+  });
+
+  // =========================================================================
+  // TEST DC: Manual SCHOOL_OVERRIDE Priority over Generated Baseline
+  // =========================================================================
+  await runTest('DC. Existing SCHOOL_OVERRIDE day survives calendar regeneration', () => {
+    const manualDay = {
+      id: 'manual-aug-17',
+      academicCalendarId: 'cal-dc',
+      date: '2026-08-17',
+      status: 'SCHOOL_EVENT' as const,
+      notes: 'Lomba Sekolah',
+      sourceType: 'SCHOOL_OVERRIDE' as const,
+      sourceLayer: 'SCHOOL_OVERRIDE' as const,
+      isOverridden: true,
+      category: 'SCHOOL_EVENT' as const,
+    };
+
+    const days = generateEffectiveCalendarDays({
+      startDate: '2026-07-13',
+      endDate: '2026-12-18',
+      schoolDaysPerWeek: 5,
+      calendarId: 'cal-dc',
+      academicYear: '2026/2027',
+      existingDays: [manualDay],
+    });
+
+    const aug17 = days.find((d) => d.date === '2026-08-17');
+    assert.ok(aug17, '2026-08-17 must exist');
+    assert.strictEqual(aug17.sourceType, 'SCHOOL_OVERRIDE');
+    assert.strictEqual(aug17.notes, 'Lomba Sekolah');
+  });
+
+  // =========================================================================
+  // TEST DD: Effective Day & Week Calculations
+  // =========================================================================
+  await runTest('DD. Generated Semester 1 baseline produces positive HE and ME with zero unknownDays', () => {
+    const base = resolvePlanningBaseline({ academicYear: '2026/2027', semester: '1' });
+    const days = generateEffectiveCalendarDays({
+      startDate: base.startDate,
+      endDate: base.endDate,
+      schoolDaysPerWeek: 5,
+      calendarId: 'cal-dd',
+      academicYear: '2026/2027',
+    });
+
+    const effRes = calculateEffectiveDays({ startDate: base.startDate, endDate: base.endDate, schoolDaysPerWeek: 5 }, days);
+    assert.ok(effRes.effectiveLearningDays > 0, 'effectiveLearningDays must be > 0');
+    assert.ok(effRes.holidayDays > 0, 'holidayDays must be > 0');
+
+    const weekRes = calculateEffectiveWeeks(effRes.effectiveLearningDays, 5);
+    assert.ok(weekRes.effectiveWeeksRounded > 0, 'effectiveWeeksRounded must be > 0');
   });
 
   console.log(`\n========================================`);
