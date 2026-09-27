@@ -1363,6 +1363,7 @@ async function main() {
     const provider = new TrustedCalendarSearchProvider({
       discoverCandidateUrls: async () => ['https://disdik.tangerangkota.go.id/fake-url-not-found-404'],
       fetchSourceContent: async () => null, // Unreachable / 404
+      generatePlainContent: async () => ({ text: '[]' }),
     });
 
     const res = await provider.searchWithDiagnostics({
@@ -1390,6 +1391,7 @@ async function main() {
         contentType: 'text/html',
         isPdf: false,
       }),
+      generatePlainContent: async () => ({ text: '[]' }),
     });
 
     const res = await provider.searchWithDiagnostics({
@@ -1414,6 +1416,7 @@ async function main() {
         contentType: 'text/html',
         isPdf: false,
       }),
+      generatePlainContent: async () => ({ text: '[]' }),
     });
 
     const res = await provider.searchWithDiagnostics({
@@ -1557,6 +1560,7 @@ async function main() {
     const provider = new TrustedCalendarSearchProvider({
       discoverCandidateUrls: async () => [],
       fetchSourceContent: async () => null,
+      generatePlainContent: async () => ({ text: '[]' }),
     });
 
     const res = await provider.searchWithDiagnostics({
@@ -2506,6 +2510,257 @@ async function main() {
     assert.strictEqual(res.candidates[0].events?.length, 1);
     assert.strictEqual(res.candidates[0].events?.[0].name, 'Kegiatan');
     assert.strictEqual(res.candidates[0].events?.[0].category, 'OTHER', 'Must fall back to OTHER when no semantic evidence exists');
+  });
+
+  // TEST BU: Seed candidate rejected, AI fallback succeeds
+  await runTest('BU. Seed candidate rejected: Rejected seed discovery triggers Plain Gemini fallback and succeeds', async () => {
+    const spmbUrl = 'https://spmb.examplekota.go.id';
+    const validAiUrl = 'https://disdik.examplekota.go.id/kaldik-2026-2027';
+    let aiDiscoveryCalled = false;
+
+    const provider = new TrustedCalendarSearchProvider({
+      discoverCandidateUrls: async () => [spmbUrl],
+      fetchSourceContent: async (url) => {
+        if (url === spmbUrl) {
+          return {
+            ok: true,
+            status: 200,
+            text: 'Website Resmi Sistem Penerimaan Murid Baru Online Kota Example Tahun Ajaran 2026/2027.',
+            rawHtml: '',
+            finalUrl: spmbUrl,
+            contentType: 'text/html',
+            isPdf: false,
+          };
+        }
+        if (url === validAiUrl) {
+          return {
+            ok: true,
+            status: 200,
+            text: 'Pedoman Kalender Pendidikan Tahun Ajaran 2026/2027 Kota Example resmi.',
+            rawHtml: '',
+            finalUrl: validAiUrl,
+            contentType: 'text/html',
+            isPdf: false,
+          };
+        }
+        return null;
+      },
+      generatePlainContent: async (prompt) => {
+        if (prompt.includes('Sebutkan 3-6 URL resmi')) {
+          aiDiscoveryCalled = true;
+          return { text: JSON.stringify([validAiUrl]) };
+        }
+        return {
+          text: JSON.stringify([
+            {
+              province: 'Banten',
+              regency: 'Kota Example',
+              academicYear: '2026/2027',
+              authority: 'Dinas Pendidikan Kota Example',
+              documentTitle: 'Pedoman Kalender Pendidikan 2026/2027',
+            },
+          ]),
+        };
+      },
+    });
+
+    const res = await provider.searchWithDiagnostics({
+      academicYear: '2026/2027',
+      province: 'Banten',
+      regency: 'Kota Example',
+    });
+
+    assert.strictEqual(res.diagnostic.reason, 'SUCCESS');
+    assert.strictEqual(res.candidates.length, 1);
+    assert.strictEqual(res.candidates[0].sourceUrl, validAiUrl);
+    assert.strictEqual(aiDiscoveryCalled, true, 'Gemini URL discovery must be invoked after seed candidate rejection');
+    assert.ok(
+      res.diagnostic.stages[0].modelAttempts.some((m) => m.status === 'SUCCESS'),
+      'modelAttempts must contain Gemini attempt'
+    );
+  });
+
+  // TEST BV: Deterministic/seed candidate valid, AI not called
+  await runTest('BV. Seed candidate valid: Valid initial candidate short-circuits before Gemini URL discovery', async () => {
+    const validSeedUrl = 'https://disdik.examplekota.go.id/kaldik-2026-2027';
+    let aiDiscoveryCalled = false;
+
+    const provider = new TrustedCalendarSearchProvider({
+      discoverCandidateUrls: async () => [validSeedUrl],
+      fetchSourceContent: async (url) => {
+        if (url === validSeedUrl) {
+          return {
+            ok: true,
+            status: 200,
+            text: 'Pedoman Kalender Pendidikan Tahun Ajaran 2026/2027 Kota Example resmi.',
+            rawHtml: '',
+            finalUrl: validSeedUrl,
+            contentType: 'text/html',
+            isPdf: false,
+          };
+        }
+        return null;
+      },
+      generatePlainContent: async (prompt) => {
+        if (prompt.includes('Sebutkan 3-6 URL resmi')) {
+          aiDiscoveryCalled = true;
+          return { text: JSON.stringify(['https://disdik.examplekota.go.id/other']) };
+        }
+        return {
+          text: JSON.stringify([
+            {
+              province: 'Banten',
+              regency: 'Kota Example',
+              academicYear: '2026/2027',
+              authority: 'Dinas Pendidikan Kota Example',
+              documentTitle: 'Pedoman Kalender Pendidikan 2026/2027',
+            },
+          ]),
+        };
+      },
+    });
+
+    const res = await provider.searchWithDiagnostics({
+      academicYear: '2026/2027',
+      province: 'Banten',
+      regency: 'Kota Example',
+    });
+
+    assert.strictEqual(res.diagnostic.reason, 'SUCCESS');
+    assert.strictEqual(res.candidates.length, 1);
+    assert.strictEqual(res.candidates[0].sourceUrl, validSeedUrl);
+    assert.strictEqual(aiDiscoveryCalled, false, 'Gemini URL discovery MUST NOT be invoked when initial candidate is valid');
+  });
+
+  // TEST BW: AI duplicate URL not refetched
+  await runTest('BW. Duplicate URL protection: Previously attempted rejected candidate URL from initial pass is not refetched during AI pass', async () => {
+    const urlA = 'https://spmb.examplekota.go.id';
+    const urlB = 'https://disdik.examplekota.go.id/kaldik-2026-2027';
+    const fetchCounts: Record<string, number> = {};
+
+    const provider = new TrustedCalendarSearchProvider({
+      discoverCandidateUrls: async () => [urlA],
+      fetchSourceContent: async (url) => {
+        fetchCounts[url] = (fetchCounts[url] || 0) + 1;
+        if (url === urlA) {
+          return {
+            ok: true,
+            status: 200,
+            text: 'Website Resmi Sistem Penerimaan Murid Baru Online Kota Example Tahun Ajaran 2026/2027.',
+            rawHtml: '',
+            finalUrl: urlA,
+            contentType: 'text/html',
+            isPdf: false,
+          };
+        }
+        if (url === urlB) {
+          return {
+            ok: true,
+            status: 200,
+            text: 'Pedoman Kalender Pendidikan Tahun Ajaran 2026/2027 Kota Example resmi.',
+            rawHtml: '',
+            finalUrl: urlB,
+            contentType: 'text/html',
+            isPdf: false,
+          };
+        }
+        return null;
+      },
+      generatePlainContent: async (prompt) => {
+        if (prompt.includes('Sebutkan 3-6 URL resmi')) {
+          return { text: JSON.stringify([urlA, urlB]) };
+        }
+        return {
+          text: JSON.stringify([
+            {
+              province: 'Banten',
+              regency: 'Kota Example',
+              academicYear: '2026/2027',
+              authority: 'Dinas Pendidikan Kota Example',
+              documentTitle: 'Pedoman Kalender Pendidikan 2026/2027',
+            },
+          ]),
+        };
+      },
+    });
+
+    const res = await provider.searchWithDiagnostics({
+      academicYear: '2026/2027',
+      province: 'Banten',
+      regency: 'Kota Example',
+    });
+
+    assert.strictEqual(res.diagnostic.reason, 'SUCCESS');
+    assert.strictEqual(res.candidates.length, 1);
+    assert.strictEqual(res.candidates[0].sourceUrl, urlB);
+    assert.strictEqual(fetchCounts[urlA], 1, 'URL A must be fetched exactly once (not refetched in AI pass)');
+    assert.strictEqual(fetchCounts[urlB], 1, 'URL B evaluated and fetched once');
+  });
+
+  // TEST BX: National rejected initial URL triggers AI fallback
+  await runTest('BX. National stage fallback: Rejected initial NATIONAL source triggers Plain Gemini URL discovery', async () => {
+    const nationalInitialUrl = 'https://kemdikbud.go.id/kalender-pendidikan-2026-2027';
+    const nationalAiUrl = 'https://kemendikdasmen.go.id/pedoman-kalender-pendidikan-2026-2027';
+    let nationalAiDiscoveryCalled = false;
+
+    const provider = new TrustedCalendarSearchProvider({
+      discoverCandidateUrls: async (_req, level) => {
+        if (level === 'NATIONAL') {
+          return [nationalInitialUrl];
+        }
+        return [];
+      },
+      fetchSourceContent: async (url) => {
+        if (url === nationalInitialUrl) {
+          return {
+            ok: true,
+            status: 200,
+            text: 'Halaman Berita Utama Kemdikbud Tahun Ajaran 2026/2027.',
+            rawHtml: '',
+            finalUrl: nationalInitialUrl,
+            contentType: 'text/html',
+            isPdf: false,
+          };
+        }
+        if (url === nationalAiUrl) {
+          return {
+            ok: true,
+            status: 200,
+            text: 'Pedoman Standar Kalender Pendidikan Tahun Ajaran 2026/2027 Nasional Kemendikdasmen RI.',
+            rawHtml: '',
+            finalUrl: nationalAiUrl,
+            contentType: 'text/html',
+            isPdf: false,
+          };
+        }
+        return null;
+      },
+      generatePlainContent: async (prompt) => {
+        if (prompt.includes('Sebutkan 3-6 URL resmi')) {
+          nationalAiDiscoveryCalled = true;
+          return { text: JSON.stringify([nationalAiUrl]) };
+        }
+        return {
+          text: JSON.stringify([
+            {
+              academicYear: '2026/2027',
+              authority: 'Kementerian Pendidikan Dasar dan Menengah RI',
+              documentTitle: 'Pedoman Standar Kalender Pendidikan 2026/2027',
+            },
+          ]),
+        };
+      },
+    });
+
+    const res = await provider.searchWithDiagnostics({
+      academicYear: '2026/2027',
+    });
+
+    assert.strictEqual(res.diagnostic.reason, 'SUCCESS');
+    assert.strictEqual(res.candidates.length, 1);
+    assert.strictEqual(res.candidates[0].sourceLevel, 'NATIONAL');
+    assert.strictEqual(res.candidates[0].sourceUrl, nationalAiUrl);
+    assert.strictEqual(nationalAiDiscoveryCalled, true, 'Plain Gemini discovery must run on NATIONAL stage when initial URL is rejected');
   });
 
   console.log(`\n========================================`);

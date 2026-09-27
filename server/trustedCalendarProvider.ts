@@ -1314,16 +1314,66 @@ Ketentuan:
 
     const runStage = async (level: CalendarSourceLevel): Promise<boolean> => {
       const modelAttempts: CalendarModelAttemptDiagnostic[] = [];
+      const attemptedUrls = new Set<string>();
+      const candidateUrlsAttempted = new Set<string>();
+      let verifiedOfficialCount = 0;
+      const stageCandidates: CalendarSourceCandidate[] = [];
 
-      // 1. Collect candidate URLs from injected discoverer, seed HTML link discovery, deterministic patterns, and plain Gemini helper
-      const discoveredCandidateUrls: string[] = [];
-      const fallbackProbes: string[] = [];
+      const verifyCandidateUrls = async (urls: string[], isDiscovered: boolean): Promise<boolean> => {
+        const freshUrls: string[] = [];
+        for (const u of urls) {
+          const trimmed = u ? u.trim() : '';
+          if (trimmed && isOfficialCalendarSourceUrl(trimmed) && !attemptedUrls.has(trimmed)) {
+            freshUrls.push(trimmed);
+          }
+        }
+
+        const urlsToTry = freshUrls.slice(0, 8);
+        for (const url of urlsToTry) {
+          attemptedUrls.add(url);
+          if (isDiscovered) {
+            candidateUrlsAttempted.add(url);
+          }
+
+          const fetched = await this.fetchSource(url);
+          if (!fetched || !fetched.ok) {
+            continue;
+          }
+
+          candidateUrlsAttempted.add(url);
+
+          const relevance = verifySourceContentRelevance(fetched.text, fetched.finalUrl, request, level);
+          if (!relevance.isValid) {
+            continue;
+          }
+
+          verifiedOfficialCount++;
+
+          // Plain Gemini extraction (or metadata fallback)
+          const candidate = await this.extractCandidateFromVerifiedSource(
+            request,
+            level,
+            fetched.finalUrl,
+            fetched.text,
+            modelAttempts
+          );
+
+          stageCandidates.push(candidate);
+          return true; // Found verified and relevant official source for this stage!
+        }
+
+        return false;
+      };
+
+      // PASS 1: Discovered URLs + Deterministic probes
+      const discoveredUrls: string[] = [];
+      const deterministicUrls: string[] = [];
 
       if (this.customDiscoverUrls) {
         try {
           const customUrls = await this.customDiscoverUrls(request, level);
           if (Array.isArray(customUrls)) {
-            discoveredCandidateUrls.push(...customUrls);
+            discoveredUrls.push(...customUrls);
           }
         } catch {
           // ignore custom discovery errors
@@ -1337,74 +1387,37 @@ Ketentuan:
           try {
             const fetchedSeed = await this.fetchSource(seedUrl);
             if (fetchedSeed && fetchedSeed.ok) {
-              // If the seed page itself directly passes calendar relevance verification, it can be a candidate
               const seedRelevance = verifySourceContentRelevance(fetchedSeed.text, fetchedSeed.finalUrl, request, level);
               if (seedRelevance.isValid) {
-                discoveredCandidateUrls.push(fetchedSeed.finalUrl);
+                discoveredUrls.push(fetchedSeed.finalUrl);
               }
 
-              // Extract and rank links from HTML
               const htmlContent = fetchedSeed.rawHtml || fetchedSeed.text;
               const extractedLinks = extractOfficialLinksFromHtml(htmlContent, fetchedSeed.finalUrl, request.academicYear);
-              discoveredCandidateUrls.push(...extractedLinks);
+              discoveredUrls.push(...extractedLinks);
             }
           } catch {
             // ignore seed fetch error
           }
         }
 
-        // C. Deterministic candidate URLs as compatibility fallback
-        if (discoveredCandidateUrls.length === 0) {
-          fallbackProbes.push(...generateDeterministicOfficialUrls(request, level));
-        }
-
-        // D. Plain Gemini URL suggestions as final fallback (if needed)
-        if (isAiConfigured && discoveredCandidateUrls.length === 0) {
-          const aiUrls = await this.discoverCandidateUrlsWithAI(request, level, modelAttempts);
-          discoveredCandidateUrls.push(...aiUrls);
-        }
+        // C. Deterministic candidate URLs (always included in Pass 1)
+        deterministicUrls.push(...generateDeterministicOfficialUrls(request, level));
       }
 
-      // Deduplicate and filter strict official .go.id
-      const allUrlsToTest = Array.from(
-        new Set([...discoveredCandidateUrls, ...fallbackProbes].map((u) => u.trim()))
-      ).filter(isOfficialCalendarSourceUrl).slice(0, 8); // Max 8 candidate URLs per stage
-
-      let rawCandidateCount = discoveredCandidateUrls.filter(isOfficialCalendarSourceUrl).length;
-      let verifiedOfficialCount = 0;
-      const stageCandidates: CalendarSourceCandidate[] = [];
-
-      // 2. HTTP Fetch and verify each candidate
-      for (const url of allUrlsToTest) {
-        const fetched = await this.fetchSource(url);
-        if (!fetched || !fetched.ok) {
-          continue;
-        }
-
-        if (discoveredCandidateUrls.length === 0) {
-          rawCandidateCount++;
-        }
-
-        const relevance = verifySourceContentRelevance(fetched.text, fetched.finalUrl, request, level);
-        if (!relevance.isValid) {
-          continue;
-        }
-
-        verifiedOfficialCount++;
-
-        // 3. Plain Gemini extraction (or metadata fallback for PDF)
-        const candidate = await this.extractCandidateFromVerifiedSource(
-          request,
-          level,
-          fetched.finalUrl,
-          fetched.text,
-          modelAttempts
-        );
-
-        stageCandidates.push(candidate);
-        break; // Found verified and relevant official source for this geographic level!
+      // Execute PASS 1: try discovered URLs first, then deterministic probes
+      let pass1Found = await verifyCandidateUrls(discoveredUrls, true);
+      if (!pass1Found && deterministicUrls.length > 0) {
+        pass1Found = await verifyCandidateUrls(deterministicUrls, false);
       }
 
+      // PASS 2: If Pass 1 failed to yield an accepted candidate, trigger Plain Gemini URL discovery as fallback
+      if (!pass1Found && isAiConfigured) {
+        const aiUrls = await this.discoverCandidateUrlsWithAI(request, level, modelAttempts);
+        await verifyCandidateUrls(aiUrls, true);
+      }
+
+      const rawCandidateCount = candidateUrlsAttempted.size;
       const responseReceived = verifiedOfficialCount > 0 || modelAttempts.some((m) => m.status === 'SUCCESS');
       const textPresent = stageCandidates.length > 0;
       const acceptedCandidateCount = stageCandidates.length;
@@ -1415,8 +1428,8 @@ Ketentuan:
         responseReceived,
         textPresent,
         rawCandidateCount,
-        groundingSourceCount: rawCandidateCount, // compatible alias for discovered sources
-        resolvedGroundingCount: verifiedOfficialCount, // compatible alias for verified sources
+        groundingSourceCount: rawCandidateCount, // compatible alias
+        resolvedGroundingCount: verifiedOfficialCount, // compatible alias
         acceptedCandidateCount,
       };
 
