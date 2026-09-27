@@ -462,8 +462,8 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
     if (!targetStart || !targetEnd) {
       setWorkflowStatus('REVIEWED');
       setResolutionStatus('PARTIALLY_RESOLVED');
-      setResolutionMessage(`Sumber resmi ${candidate.authority} ditemukan, tetapi batas tanggal semester tidak dapat ditentukan secara terverifikasi. Silakan lengkapi tanggal secara manual.`);
-      setSaveNotification(`Sumber resmi ditemukan — lengkapi tanggal Semester ${activeSem} secara manual di panel Tinjau.`);
+      setResolutionMessage(`Sumber acuan ${candidate.authority} ditemukan, tetapi batas tanggal semester tidak dapat ditentukan secara terverifikasi. Silakan lengkapi tanggal secara manual.`);
+      setSaveNotification(`Sumber acuan ditemukan — lengkapi tanggal Semester ${activeSem} secara manual di panel Tinjau.`);
       setTimeout(() => setSaveNotification(null), 4000);
       return;
     }
@@ -1118,7 +1118,7 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
                   </p>
                 ) : (
                   <p className="text-amber-800 italic">
-                    Sumber resmi ditemukan, tetapi batas tanggal semester tidak dapat ditentukan secara terverifikasi.
+                    Sumber acuan ditemukan, tetapi batas tanggal semester tidak dapat ditentukan secara terverifikasi.
                     Silakan tinjau dokumen dan lengkapi tanggal secara manual.
                   </p>
                 )}

@@ -290,9 +290,9 @@ async function main() {
   });
 
   // =========================================================================
-  // TEST 6: Backend contract: Empty search yields UNRESOLVED with zero fabricated fallback
+  // TEST 6: Backend contract: Empty regional search falls back to verified National Base
   // =========================================================================
-  await runTest('6. Backend contract: Empty search results yield status UNRESOLVED without fabricated data', async () => {
+  await runTest('6. Backend contract: Empty regional search falls back to verified National Base', async () => {
     const fakeGenerate = async (): Promise<GroundedSearchResponse> => ({
       text: '[]',
     });
@@ -310,17 +310,25 @@ async function main() {
     const candidates = await provider.search(searchRequest);
     const selectedSource = selectBestCalendarSource(candidates, searchRequest);
 
-    assert.strictEqual(selectedSource, null);
+    assert(selectedSource !== null, 'selectedSource must be provided via National Base fallback');
+    assert.strictEqual(selectedSource.sourceLevel, 'NATIONAL');
+    assert.strictEqual(selectedSource.authorityType, 'OFFICIAL');
+    assert.strictEqual(selectedSource.verificationStatus, 'PARTIAL');
+    assert(Array.isArray(selectedSource.events) && selectedSource.events.length > 0, 'events must be present in National Base');
+
+    const status = evaluateCalendarCandidate(selectedSource);
+    assert.strictEqual(status, 'PARTIALLY_RESOLVED');
+
     const resolution: CalendarProviderResolution = {
-      status: 'UNRESOLVED',
-      selectedSource: undefined,
-      candidates,
-      resolvedLevel: undefined,
+      status,
+      selectedSource,
+      candidates: selectedSource ? [selectedSource] : candidates,
+      resolvedLevel: selectedSource.sourceLevel,
     };
 
-    assert.strictEqual(resolution.status, 'UNRESOLVED');
-    assert.strictEqual(resolution.selectedSource, undefined);
-    assert.deepStrictEqual(resolution.candidates, []);
+    assert.strictEqual(resolution.status, 'PARTIALLY_RESOLVED');
+    assert.strictEqual(resolution.resolvedLevel, 'NATIONAL');
+    assert.strictEqual(resolution.candidates.length, 1);
   });
 
   // =========================================================================
