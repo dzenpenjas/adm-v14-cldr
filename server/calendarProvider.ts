@@ -4,13 +4,22 @@ import {
   CalendarSearchRequest,
   CalendarSourceCandidate,
   CalendarSourceLevel,
+  type CalendarSourceAuthorityType,
   CalendarSearchDiagnostic,
   CalendarSearchDiagnosticReason,
   CalendarStageDiagnostic,
   CalendarModelAttemptDiagnostic,
   CalendarSearchResultWithDiagnostics,
   normalizeRegionName,
+  classifyCalendarSourceAuthority,
+  isSafeCalendarSourceUrl,
 } from '../src/services/calendarProvider';
+
+export type { CalendarSourceAuthorityType };
+export {
+  classifyCalendarSourceAuthority,
+  isSafeCalendarSourceUrl,
+};
 
 /**
  * Sanitizes errors to standard diagnostic error category strings without leaking secrets or raw text.

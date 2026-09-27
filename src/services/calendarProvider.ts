@@ -1,3 +1,7 @@
+export type CalendarSourceAuthorityType =
+  | 'OFFICIAL'
+  | 'NON_OFFICIAL';
+
 /**
  * Canonical hierarchy for calendar provenance level.
  * Single canonical vocabulary representing governance scopes.
@@ -42,6 +46,8 @@ export interface CalendarSourceEvent {
  */
 export interface CalendarSourceCandidate {
   sourceLevel: CalendarSourceLevel;
+  authorityType?: CalendarSourceAuthorityType;
+  confidence?: 'HIGH' | 'MEDIUM';
 
   province?: string;
   regency?: string;
@@ -203,6 +209,66 @@ export function normalizeRegionName(value?: string): string {
 }
 
 /**
+ * Classifies whether a calendar source URL is OFFICIAL (*.go.id) or NON_OFFICIAL.
+ */
+export function classifyCalendarSourceAuthority(
+  sourceUrl?: string
+): CalendarSourceAuthorityType {
+  if (!sourceUrl || typeof sourceUrl !== 'string') return 'NON_OFFICIAL';
+  try {
+    const parsed = new URL(sourceUrl.trim());
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname.endsWith('.go.id') || hostname === 'go.id') {
+      return 'OFFICIAL';
+    }
+  } catch {
+    // ignore
+  }
+  return 'NON_OFFICIAL';
+}
+
+/**
+ * Validates whether a calendar source URL is safe to fetch:
+ * HTTPS, valid URL, not private IP/localhost/loopback, not javascript/data.
+ */
+export function isSafeCalendarSourceUrl(sourceUrl?: string): boolean {
+  if (!sourceUrl || typeof sourceUrl !== 'string') return false;
+  const trimmed = sourceUrl.trim();
+  if (!trimmed.startsWith('https://')) return false;
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'https:') return false;
+
+    const hostname = parsed.hostname.toLowerCase();
+    if (!hostname || hostname.includes(' ') || !hostname.includes('.')) return false;
+
+    // Reject localhost, local domain, or private/loopback IPs
+    if (
+      hostname === 'localhost' ||
+      hostname.endsWith('.localhost') ||
+      hostname.endsWith('.local') ||
+      hostname.endsWith('.internal') ||
+      hostname === '127.0.0.1' ||
+      hostname === '0.0.0.0' ||
+      hostname.startsWith('192.168.') ||
+      hostname.startsWith('10.') ||
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname)
+    ) {
+      return false;
+    }
+
+    if (trimmed.includes('javascript:') || trimmed.includes('data:') || trimmed.includes('vbscript:')) {
+      return false;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Checks whether a candidate possesses basic validity and required provenance.
  * Source URL, authority, academicYear are mandatory; UNVERIFIED status is discarded.
  */
@@ -218,10 +284,13 @@ export function isUsableCalendarCandidate(
 }
 
 /**
- * Selects the best calendar candidate according to geographic hierarchy:
+ * Selects the best calendar candidate according to geographic & authority hierarchy:
  * 1. Exact academicYear matching
  * 2. Usable candidates only (VERIFIED or PARTIAL with valid sourceUrl & authority)
- * 3. Priority: Matching REGENCY > Matching PROVINCE > NATIONAL
+ * 3. Priority:
+ *    - Matching REGENCY (OFFICIAL > NON_OFFICIAL)
+ *    - Matching PROVINCE (OFFICIAL > NON_OFFICIAL)
+ *    - NATIONAL (OFFICIAL > NON_OFFICIAL)
  */
 export function selectBestCalendarSource(
   candidates: CalendarSourceCandidate[],
@@ -244,6 +313,19 @@ export function selectBestCalendarSource(
     return null;
   }
 
+  // Sort candidates within a level: OFFICIAL beats NON_OFFICIAL, VERIFIED beats PARTIAL
+  const sortCandidates = (items: CalendarSourceCandidate[]): CalendarSourceCandidate[] => {
+    return [...items].sort((a, b) => {
+      const aAuth = (a.authorityType || classifyCalendarSourceAuthority(a.sourceUrl)) === 'NON_OFFICIAL' ? 1 : 0;
+      const bAuth = (b.authorityType || classifyCalendarSourceAuthority(b.sourceUrl)) === 'NON_OFFICIAL' ? 1 : 0;
+      if (aAuth !== bAuth) return aAuth - bAuth;
+
+      const aVer = a.verificationStatus === 'VERIFIED' ? 0 : 1;
+      const bVer = b.verificationStatus === 'VERIFIED' ? 0 : 1;
+      return aVer - bVer;
+    });
+  };
+
   // 1. REGENCY check
   if (reqRegency) {
     const regencyCandidates = usable.filter((c) => {
@@ -253,15 +335,14 @@ export function selectBestCalendarSource(
 
       if (reqProvince) {
         const cProvince = normalizeRegionName(c.province);
-        if (!cProvince || cProvince !== reqProvince) return false;
+        if (cProvince && cProvince !== reqProvince) return false;
       }
       return true;
     });
 
     if (regencyCandidates.length > 0) {
-      // Prioritize VERIFIED over PARTIAL
-      const verified = regencyCandidates.find((c) => c.verificationStatus === 'VERIFIED');
-      return verified || regencyCandidates[0];
+      const sorted = sortCandidates(regencyCandidates);
+      return sorted[0];
     }
   }
 
@@ -270,20 +351,20 @@ export function selectBestCalendarSource(
     const provinceCandidates = usable.filter((c) => {
       if (c.sourceLevel !== 'PROVINCE') return false;
       const cProvince = normalizeRegionName(c.province);
-      return cProvince === reqProvince;
+      return !cProvince || cProvince === reqProvince;
     });
 
     if (provinceCandidates.length > 0) {
-      const verified = provinceCandidates.find((c) => c.verificationStatus === 'VERIFIED');
-      return verified || provinceCandidates[0];
+      const sorted = sortCandidates(provinceCandidates);
+      return sorted[0];
     }
   }
 
   // 3. NATIONAL check
   const nationalCandidates = usable.filter((c) => c.sourceLevel === 'NATIONAL');
   if (nationalCandidates.length > 0) {
-    const verified = nationalCandidates.find((c) => c.verificationStatus === 'VERIFIED');
-    return verified || nationalCandidates[0];
+    const sorted = sortCandidates(nationalCandidates);
+    return sorted[0];
   }
 
   return null;

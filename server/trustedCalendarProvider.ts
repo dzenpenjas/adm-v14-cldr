@@ -6,12 +6,15 @@ import {
   CalendarSourceCandidate,
   CalendarSourceLevel,
   CalendarSourceEvent,
+  type CalendarSourceAuthorityType,
   CalendarSearchDiagnostic,
   CalendarSearchDiagnosticReason,
   CalendarStageDiagnostic,
   CalendarModelAttemptDiagnostic,
   CalendarSearchResultWithDiagnostics,
   normalizeRegionName,
+  classifyCalendarSourceAuthority,
+  isSafeCalendarSourceUrl,
 } from '../src/services/calendarProvider';
 import {
   isOfficialCalendarSourceUrl,
@@ -369,6 +372,84 @@ export function deriveEventCategoryFromEvidence(
   return 'OTHER';
 }
 
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Validates exact geographic match according to level.
+ * Distinguishes Kota vs Kabupaten vs directional compounds (e.g. Kota Tangerang vs Kabupaten Tangerang vs Kota Tangerang Selatan).
+ */
+export function checkGeographicMatch(
+  textOrHtml: string,
+  url: string,
+  request: CalendarSearchRequest,
+  level: CalendarSourceLevel
+): boolean {
+  const combined = `${url || ''} ${textOrHtml || ''}`.toLowerCase().replace(/[-_]/g, ' ');
+
+  if (level === 'PROVINCE') {
+    if (!request.province) return true;
+    const provNorm = normalizeRegionName(request.province);
+    if (!provNorm) return true;
+    return combined.includes(provNorm);
+  }
+
+  if (level === 'REGENCY') {
+    if (!request.regency) return true;
+    const rawReq = request.regency.trim().toLowerCase();
+    const isKotaReq = /^kota\b/i.test(rawReq);
+    const isKabReq = /^kab(upaten)?\b/i.test(rawReq);
+
+    const coreName = rawReq
+      .replace(/^kabupaten\s+/i, '')
+      .replace(/^kab\.\s*/i, '')
+      .replace(/^kab\s+/i, '')
+      .replace(/^kota\s+/i, '')
+      .trim();
+
+    if (!coreName || coreName.length < 3) return true;
+
+    // Check directional/compound suffixes that differentiate cities/regencies with common prefixes:
+    const compoundSuffixes = ['selatan', 'barat', 'timur', 'utara', 'tengah', 'hulu', 'hilir', 'daya'];
+    const forbiddenSuffixes = compoundSuffixes.filter((sfx) => !coreName.includes(sfx));
+
+    const forbiddenSuffixPattern = forbiddenSuffixes.length > 0
+      ? `(?!\\s+(?:${forbiddenSuffixes.join('|')})\\b)`
+      : '';
+
+    if (isKotaReq) {
+      // Must match Kota indicators for this coreName
+      const kotaPatterns = [
+        new RegExp(`\\bkota\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\bpemkot\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\bkotamadya\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\b${escapeRegex(coreName.replace(/\s+/g, ''))}kota\\.go\\.id\\b`, 'i'),
+      ];
+
+      return kotaPatterns.some((pat) => pat.test(combined));
+    }
+
+    if (isKabReq) {
+      // Must match Kabupaten indicators for this coreName
+      const kabPatterns = [
+        new RegExp(`\\bkabupaten\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\bkab\\.?\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\bpemkab\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\b${escapeRegex(coreName.replace(/\s+/g, ''))}kab\\.go\\.id\\b`, 'i'),
+      ];
+
+      return kabPatterns.some((pat) => pat.test(combined));
+    }
+
+    // Default if prefix is unspecified
+    const generalPattern = new RegExp(`\\b${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i');
+    return generalPattern.test(combined);
+  }
+
+  return true;
+}
+
 /**
  * Verifies whether fetched text or page content contains genuine proof
  * of Indonesian academic calendar regulations for the requested region and academic year.
@@ -424,28 +505,8 @@ export function verifySourceContentRelevance(
   }
   const hasAcademicYear = yearVariants.some((v) => combined.includes(v.toLowerCase()));
 
-  // 5. Geographic signal matching
-  let hasGeographicSignal = true;
-  if (level === 'REGENCY' && request.regency) {
-    const regCore = request.regency
-      .toLowerCase()
-      .replace(/^kabupaten\s+/i, '')
-      .replace(/^kab\.\s*/i, '')
-      .replace(/^kota\s+/i, '')
-      .trim();
-    if (regCore.length >= 3) {
-      hasGeographicSignal = combined.includes(regCore);
-    }
-  } else if (level === 'PROVINCE' && request.province) {
-    const provCore = request.province
-      .toLowerCase()
-      .replace(/^provinsi\s+/i, '')
-      .replace(/^prov\.\s*/i, '')
-      .trim();
-    if (provCore.length >= 3) {
-      hasGeographicSignal = combined.includes(provCore);
-    }
-  }
+  // 5. Geographic signal matching with exact distinction (Kota vs Kabupaten vs compounds)
+  const hasGeographicSignal = checkGeographicMatch(textOrHtml, url, request, level);
 
   // Strong calendar evidence in fetched content is mandatory. Weak keywords or URL-only terms cannot qualify a candidate.
   // If strong calendar evidence is absent:
