@@ -1269,13 +1269,13 @@ Ketentuan:
       const parsed = JSON.parse(text);
       if (Array.isArray(parsed)) {
         return parsed
-          .filter((item): item is string => typeof item === 'string' && isOfficialCalendarSourceUrl(item))
+          .filter((item): item is string => typeof item === 'string' && isSafeCalendarSourceUrl(item))
           .map((s) => s.trim());
       }
     } catch {
       // Extract urls by regex if JSON parsing fails
-      const matches = [...text.matchAll(/https:\/\/[a-zA-Z0-9\.\-_]+\.go\.id[^\s\"'<>]+/g)].map((m) => m[0]);
-      return matches.filter(isOfficialCalendarSourceUrl);
+      const matches = [...text.matchAll(/https:\/\/[a-zA-Z0-9\.\-_]+[^\s\"'<>]+/g)].map((m) => m[0]);
+      return matches.filter(isSafeCalendarSourceUrl);
     }
     return [];
   }
@@ -1540,7 +1540,11 @@ Ketentuan:
           }
         }
 
-        return stageCandidates.length > 0;
+        return stageCandidates.some((c) => c.authorityType === 'OFFICIAL');
+      };
+
+      const hasOfficialCandidate = (): boolean => {
+        return stageCandidates.some((c) => c.authorityType === 'OFFICIAL');
       };
 
       // PASS 1A: Google Search Grounding Discovery (primary)
@@ -1586,16 +1590,20 @@ Ketentuan:
         deterministicUrls.push(...generateDeterministicOfficialUrls(request, level));
       }
 
-      // Execute PASS 1
-      let pass1Found = await verifyCandidateUrls(discoveredUrls, true);
-      if (!pass1Found && deterministicUrls.length > 0) {
-        pass1Found = await verifyCandidateUrls(deterministicUrls, false);
+      // Execute PASS 1: Grounding & Seeds
+      await verifyCandidateUrls(discoveredUrls, true);
+
+      // If no OFFICIAL candidate found yet, continue to deterministic pass
+      if (!hasOfficialCandidate() && deterministicUrls.length > 0) {
+        await verifyCandidateUrls(deterministicUrls, false);
       }
 
-      // PASS 2: If Pass 1 failed to yield an accepted candidate, trigger Plain Gemini URL discovery as fallback
-      if (!pass1Found && isAiConfigured) {
+      // PASS 2: If we still don't have an OFFICIAL candidate, trigger Plain Gemini URL discovery as fallback
+      if (!hasOfficialCandidate() && isAiConfigured) {
         const aiUrls = await this.discoverCandidateUrlsWithAI(request, level, modelAttempts);
-        await verifyCandidateUrls(aiUrls, true);
+        if (aiUrls.length > 0) {
+          await verifyCandidateUrls(aiUrls, true);
+        }
       }
 
       const rawCandidateCount = candidateUrlsAttempted.size;

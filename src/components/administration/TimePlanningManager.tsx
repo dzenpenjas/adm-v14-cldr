@@ -472,8 +472,12 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
     setEndDate(targetEnd);
 
     // Project structured events from candidate to CalendarDay[] with manual override precedence and national holiday overlay
+    const candidateForProjection = candidate.sourceLevel === 'NATIONAL'
+      ? { ...candidate, events: undefined }
+      : candidate;
+
     const projectedDays = projectCandidateEventsToCalendarDays({
-      candidate,
+      candidate: candidateForProjection,
       startDate: targetStart,
       endDate: targetEnd,
       calendarId: calendar?.id || `cal-${academicSetting.id}`,
@@ -487,7 +491,7 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
     setResolutionStatus(isComplete ? 'RESOLVED' : 'PARTIALLY_RESOLVED');
 
     setResolutionMessage(`Acuan kalender diambil dari ${candidate.authority} (${candidate.documentTitle}) - Semester ${activeSem}`);
-    setSaveNotification(`Tanggal & agenda Semester ${activeSem} diisi dari acuan resmi online — klik "Konfirmasi Kalender" untuk menetapkan.`);
+    setSaveNotification(`Tanggal & agenda Semester ${activeSem} diisi dari acuan online — klik "Konfirmasi Kalender" untuk menetapkan.`);
     setTimeout(() => setSaveNotification(null), 4000);
   };
 
@@ -557,7 +561,25 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
       updatedAt: new Date().toISOString(),
     };
 
-    const res = confirmCalendarWorkflow(currentCal, days);
+    // Project candidate / national base events if online discovery candidate was selected
+    let finalDays = days;
+    if (onlineDiscovery) {
+      const candidateForProjection = onlineDiscovery.sourceLevel === 'NATIONAL'
+        ? { ...onlineDiscovery, events: undefined }
+        : onlineDiscovery;
+
+      finalDays = projectCandidateEventsToCalendarDays({
+        candidate: candidateForProjection,
+        startDate,
+        endDate,
+        calendarId: calendar?.id || `cal-${academicSetting.id}`,
+        existingDays: days,
+        academicYear: academicSetting.academicYear || academicYear || onlineDiscovery.academicYear,
+      });
+      setDays(finalDays);
+    }
+
+    const res = confirmCalendarWorkflow(currentCal, finalDays);
     setWorkflowStatus('CONFIRMED');
     onSaveCalendar(res.calendar, res.days);
 
@@ -989,7 +1011,7 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
             <div>
               <p className="font-bold">Pencarian AI sedang berjalan</p>
               <p className="text-[11px] text-indigo-700">
-                Mencari Kalender Pendidikan resmi: {searchRegency || 'Kabupaten/Kota'} → {searchProvince || 'Provinsi'} → Nasional
+                Mencari Kalender Pendidikan: {searchRegency || 'Kabupaten/Kota'} → {searchProvince || 'Provinsi'} → Acuan Nasional
               </p>
             </div>
           </div>
@@ -1001,7 +1023,7 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
             <div>
               <p className="font-bold">Pencarian AI berhasil</p>
               <p className="text-[11px] text-emerald-800">
-                Sumber Kalender Pendidikan resmi ditemukan. Silakan tinjau sebelum digunakan.
+                Sumber kalender ditemukan. Silakan tinjau sebelum digunakan.
               </p>
             </div>
           </div>
@@ -1015,7 +1037,7 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
               <p className="text-[11px] text-amber-800">
                 {onlineDiscovery?.sourceLevel === 'NATIONAL'
                   ? 'Sumber nasional ditemukan sebagai referensi, tetapi Kalender Pendidikan daerah belum ditemukan.'
-                  : 'Sumber Kalender Pendidikan resmi yang dapat digunakan belum ditemukan.'}
+                  : 'Sumber kalender yang dapat digunakan belum ditemukan.'}
               </p>
             </div>
           </div>

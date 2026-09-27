@@ -31,6 +31,10 @@ import {
   isUsableCalendarCandidate,
   evaluateCalendarCandidate,
 } from '../src/services/calendarProvider';
+import {
+  projectCandidateEventsToCalendarDays,
+  confirmCalendarWorkflow,
+} from '../src/services/calendarResolver';
 
 console.log('=== RUNNING AUDIT: BACKEND CALENDAR ONLINE SEARCH PROVIDER ===\n');
 
@@ -3003,7 +3007,7 @@ async function main() {
 
   // TEST CF: Grounding 429 falls back without failing whole search
   await runTest('CF. Resilience: Grounding 429 error falls back gracefully to existing discovery and succeeds', async () => {
-    const validFallbackUrl = 'https://disdik.tangerangkota.go.id/kaldik-2026-2027';
+    const validDeterministicUrl = 'https://dindik.tangerangkota.go.id/kalender-pendidikan-2026-2027.pdf';
 
     const provider = new TrustedCalendarSearchProvider({
       generateGroundedContent: async () => {
@@ -3011,15 +3015,19 @@ async function main() {
         error.status = 429;
         throw error;
       },
-      discoverCandidateUrls: async () => [validFallbackUrl],
-      fetchSourceContent: async (url) => ({
-        ok: true,
-        status: 200,
-        text: 'Kalender Pendidikan Tahun Ajaran 2026/2027 Kota Tangerang resmi.',
-        finalUrl: url,
-        contentType: 'text/html',
-        isPdf: false,
-      }),
+      fetchSourceContent: async (url) => {
+        if (url === validDeterministicUrl || url.includes('tangerangkota.go.id')) {
+          return {
+            ok: true,
+            status: 200,
+            text: 'Keputusan Kepala Dinas Pendidikan Kota Tangerang tentang Kalender Pendidikan Tahun Ajaran 2026/2027 Kota Tangerang resmi.',
+            finalUrl: url,
+            contentType: 'application/pdf',
+            isPdf: true,
+          };
+        }
+        return null;
+      },
       generatePlainContent: async () => ({
         text: JSON.stringify([
           {
@@ -3041,7 +3049,8 @@ async function main() {
 
     assert.strictEqual(res.diagnostic.reason, 'SUCCESS');
     assert.strictEqual(res.candidates.length, 1);
-    assert.strictEqual(res.candidates[0].sourceUrl, validFallbackUrl);
+    assert.strictEqual(res.candidates[0].sourceLevel, 'REGENCY');
+    assert.strictEqual(res.candidates[0].authorityType, 'OFFICIAL');
   });
 
   // TEST CG: REGENCY empty + PROVINCE valid returns PROVINCE
@@ -3119,7 +3128,7 @@ async function main() {
     assert.strictEqual(nationalBase.semester1EndDate, undefined, 'Must not fabricate semester boundaries');
   });
 
-  // TEST CJ: NATIONAL candidate is usable by UI, not converted to NOT_FOUND
+  // TEST CJ: NATIONAL candidate is recognized as usable by UI
   await runTest('CJ. UI Usability: NATIONAL candidate is recognized as usable and evaluates to PARTIALLY_RESOLVED', () => {
     const nationalBase = buildNationalBaseCandidate('2026/2027');
 
@@ -3150,6 +3159,189 @@ async function main() {
     assert.ok(candidates.length >= 1, 'Search must never return empty array');
     assert.strictEqual(candidates[0].sourceLevel, 'NATIONAL');
     assert.ok(candidates[0].events && candidates[0].events.length > 0, 'Must have national events');
+  });
+
+  // TEST CL: Grounding returns valid NON_OFFICIAL + deterministic pass contains valid OFFICIAL -> OFFICIAL must win
+  await runTest('CL. Same-stage priority: When Grounding returns valid NON_OFFICIAL and deterministic has valid OFFICIAL, OFFICIAL must win', async () => {
+    const nonOfficialUrl = 'https://beritapendidikan.com/kaldik-kota-tangerang-2026-2027';
+    const officialDeterministicUrl = 'https://dindik.tangerangkota.go.id/kalender-pendidikan-2026-2027.pdf';
+
+    const provider = new TrustedCalendarSearchProvider({
+      generateGroundedContent: async () => ({
+        text: 'Sumber kalender tangerang nonresmi',
+        candidates: [
+          {
+            groundingMetadata: {
+              groundingChunks: [
+                {
+                  web: {
+                    uri: nonOfficialUrl,
+                    title: 'Berita Pendidikan Kaldik Tangerang',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+      fetchSourceContent: async (url) => {
+        if (url === nonOfficialUrl) {
+          return {
+            ok: true,
+            status: 200,
+            text: 'Pedoman Kalender Pendidikan Tahun Ajaran 2026/2027 Kota Tangerang lengkap.',
+            finalUrl: url,
+            contentType: 'text/html',
+            isPdf: false,
+          };
+        }
+        if (url === officialDeterministicUrl || url.includes('tangerangkota.go.id')) {
+          return {
+            ok: true,
+            status: 200,
+            text: 'Keputusan Kepala Dinas Pendidikan Kota Tangerang tentang Pedoman Kalender Pendidikan Tahun Ajaran 2026/2027 Kota Tangerang resmi.',
+            finalUrl: url,
+            contentType: 'application/pdf',
+            isPdf: true,
+          };
+        }
+        return null;
+      },
+      generatePlainContent: async (_prompt) => ({
+        text: JSON.stringify([
+          {
+            province: 'Banten',
+            regency: 'Kota Tangerang',
+            academicYear: '2026/2027',
+            authority: 'Dinas Pendidikan Kota Tangerang',
+            documentTitle: 'Kaldik Kota Tangerang 2026/2027',
+          },
+        ]),
+      }),
+    });
+
+    const res = await provider.searchWithDiagnostics({
+      academicYear: '2026/2027',
+      province: 'Banten',
+      regency: 'Kota Tangerang',
+    });
+
+    assert.strictEqual(res.diagnostic.reason, 'SUCCESS');
+    assert.ok(res.candidates.length >= 1);
+    assert.strictEqual(res.candidates[0].authorityType, 'OFFICIAL', 'OFFICIAL candidate must win over NON_OFFICIAL');
+    assert.strictEqual(res.candidates[0].sourceLevel, 'REGENCY');
+    assert.strictEqual(isOfficialCalendarSourceUrl(res.candidates[0].sourceUrl), true);
+  });
+
+  // TEST CM: National Base manual boundary projection produces CalendarDay national events upon confirmation
+  await runTest('CM. National Base confirmation: When teacher supplies manual semester boundaries, national events are projected into CalendarDay[]', () => {
+    const nationalBase = buildNationalBaseCandidate('2026/2027');
+    assert.strictEqual(nationalBase.sourceLevel, 'NATIONAL');
+    assert.strictEqual(nationalBase.semester1StartDate, undefined);
+    assert.strictEqual(nationalBase.semester1EndDate, undefined);
+
+    const manualStartDate = '2026-07-13';
+    const manualEndDate = '2026-12-18';
+
+    const candidateToProject = nationalBase.sourceLevel === 'NATIONAL'
+      ? { ...nationalBase, events: undefined }
+      : nationalBase;
+
+    const projectedDays = projectCandidateEventsToCalendarDays({
+      candidate: candidateToProject,
+      startDate: manualStartDate,
+      endDate: manualEndDate,
+      calendarId: 'cal-test-national',
+      existingDays: [],
+      academicYear: '2026/2027',
+    });
+
+    assert.ok(projectedDays.length > 0, 'Projected days must not be empty');
+
+    // Confirm workflow
+    const currentCal = {
+      id: 'cal-test-national',
+      academicSettingId: 'as-100',
+      academicYear: '2026/2027',
+      semester: '1 (Ganjil)',
+      startDate: manualStartDate,
+      endDate: manualEndDate,
+      schoolDaysPerWeek: 5,
+      sourceType: 'REGIONAL_EDUCATION_CALENDAR' as const,
+      workflowStatus: 'CONFIRMED' as const,
+      jpPerWeek: 4,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const confirmRes = confirmCalendarWorkflow(currentCal, projectedDays);
+    assert.strictEqual(confirmRes.calendar.workflowStatus, 'CONFIRMED');
+    assert.ok(confirmRes.days.length > 0, 'Confirmed calendar must retain national days');
+
+    // Verify 17 Agustus 2026 is present in confirmed days
+    const agustus17 = confirmRes.days.find((d) => d.date === '2026-08-17');
+    assert.ok(agustus17, '17 Agustus 2026 must be present in projected CalendarDay records');
+    assert.strictEqual(agustus17.status, 'holiday');
+  });
+
+  // TEST CN: Provenance integrity: 2026 events use 2026 source, 2027 events use 2027 source
+  await runTest('CN. Provenance integrity: 2026 events attribute to 2026 SKB, 2027 events attribute to 2027 SKB', () => {
+    const nationalBase = buildNationalBaseCandidate('2026/2027');
+
+    const candidateToProject = nationalBase.sourceLevel === 'NATIONAL'
+      ? { ...nationalBase, events: undefined }
+      : nationalBase;
+
+    // Project Semester 1 (2026)
+    const sem1Days = projectCandidateEventsToCalendarDays({
+      candidate: candidateToProject,
+      startDate: '2026-07-01',
+      endDate: '2026-12-31',
+      calendarId: 'cal-sem1',
+      existingDays: [],
+      academicYear: '2026/2027',
+    });
+
+    // Project Semester 2 (2027)
+    const sem2Days = projectCandidateEventsToCalendarDays({
+      candidate: candidateToProject,
+      startDate: '2027-01-01',
+      endDate: '2027-06-30',
+      calendarId: 'cal-sem2',
+      existingDays: [],
+      academicYear: '2026/2027',
+    });
+
+    const day2026 = sem1Days.find((d) => d.date === '2026-08-17');
+    assert.ok(day2026, '2026-08-17 must exist in Semester 1');
+    assert.ok(
+      day2026.sourceProvenances && day2026.sourceProvenances.length > 0,
+      '2026 event must have sourceProvenances'
+    );
+    const prov2026 = day2026.sourceProvenances[0];
+    assert.ok(
+      prov2026.documentTitle.includes('2026') || prov2026.documentNumber?.includes('2025') || prov2026.sourceUrl?.includes('2026'),
+      '2026 event must reference 2026 holiday source'
+    );
+    assert.ok(
+      !prov2026.documentTitle.includes('Tahun 2027'),
+      '2026 event MUST NOT be attributed to 2027 source'
+    );
+
+    const day2027 = sem2Days.find((d) => d.date === '2027-05-01');
+    assert.ok(day2027, '2027-05-01 must exist in Semester 2');
+    assert.ok(
+      day2027.sourceProvenances && day2027.sourceProvenances.length > 0,
+      '2027 event must have sourceProvenances'
+    );
+    const prov2027 = day2027.sourceProvenances[0];
+    assert.ok(
+      prov2027.documentTitle.includes('2027') || prov2027.documentNumber?.includes('2026') || prov2027.sourceUrl?.includes('2027'),
+      '2027 event must reference 2027 holiday source'
+    );
+    assert.ok(
+      !prov2027.documentTitle.includes('Tahun 2026'),
+      '2027 event MUST NOT be attributed to 2026 source'
+    );
   });
 
   console.log(`\n========================================`);
