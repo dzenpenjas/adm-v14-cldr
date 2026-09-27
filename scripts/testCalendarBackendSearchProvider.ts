@@ -33,8 +33,10 @@ import {
 } from '../src/services/calendarProvider';
 import {
   projectCandidateEventsToCalendarDays,
+  projectNationalBaseToSemesterDraft,
   confirmCalendarWorkflow,
 } from '../src/services/calendarResolver';
+import { OFFICIAL_NATIONAL_HOLIDAYS } from '../src/data/calendar/nationalHolidays';
 
 console.log('=== RUNNING AUDIT: BACKEND CALENDAR ONLINE SEARCH PROVIDER ===\n');
 
@@ -3342,6 +3344,190 @@ async function main() {
       !prov2027.documentTitle.includes('Tahun 2026'),
       '2027 event MUST NOT be attributed to 2026 source'
     );
+  });
+
+  // =========================================================================
+  // TEST CO: Correct 2026 Official Dataset (SKB 3 Menteri)
+  // =========================================================================
+  await runTest('CO. Official SSOT 2026 dataset matches SKB 3 Menteri accurately', () => {
+    const cutiFeb16 = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2026-02-16');
+    assert.ok(cutiFeb16 && cutiFeb16.type === 'CUTI_BERSAMA', '2026-02-16 must exist as CUTI_BERSAMA');
+
+    const cutiFeb18 = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2026-02-18');
+    assert.strictEqual(cutiFeb18, undefined, '2026-02-18 CUTI_BERSAMA must NOT exist');
+
+    const idul1 = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2026-03-21');
+    assert.ok(idul1 && idul1.type === 'NATIONAL_HOLIDAY', '2026-03-21 Idulfitri Hari 1 must exist');
+
+    const idul2 = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2026-03-22');
+    assert.ok(idul2 && idul2.type === 'NATIONAL_HOLIDAY', '2026-03-22 Idulfitri Hari 2 must exist');
+
+    const paskah = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2026-04-05');
+    assert.ok(paskah && paskah.type === 'NATIONAL_HOLIDAY', '2026-04-05 Paskah must exist');
+
+    const cutiDec24 = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2026-12-24');
+    assert.ok(cutiDec24 && cutiDec24.type === 'CUTI_BERSAMA', '2026-12-24 Cuti Natal must exist');
+
+    const cutiDec26 = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2026-12-26');
+    assert.strictEqual(cutiDec26, undefined, '2026-12-26 CUTI_BERSAMA must NOT exist');
+  });
+
+  // =========================================================================
+  // TEST CP: Correct 2027 Official Dataset (SKB 3 Menteri)
+  // =========================================================================
+  await runTest('CP. Official SSOT 2027 dataset matches SKB 3 Menteri accurately', () => {
+    const nyepi = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2027-03-08');
+    assert.ok(nyepi && nyepi.type === 'NATIONAL_HOLIDAY', '2027-03-08 Nyepi must exist');
+
+    const cutiMar9 = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2027-03-09');
+    assert.ok(cutiMar9 && cutiMar9.type === 'CUTI_BERSAMA', '2027-03-09 Cuti Idulfitri must exist');
+
+    const idul1 = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2027-03-10');
+    assert.ok(idul1 && idul1.type === 'NATIONAL_HOLIDAY', '2027-03-10 Idulfitri Hari 1 must exist');
+
+    const idul2 = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2027-03-11');
+    assert.ok(idul2 && idul2.type === 'NATIONAL_HOLIDAY', '2027-03-11 Idulfitri Hari 2 must exist');
+
+    const paskah = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2027-03-28');
+    assert.ok(paskah && paskah.type === 'NATIONAL_HOLIDAY', '2027-03-28 Paskah must exist');
+
+    const cutiDec24 = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2027-12-24');
+    assert.ok(cutiDec24 && cutiDec24.type === 'CUTI_BERSAMA', '2027-12-24 Cuti Natal must exist');
+
+    const natal = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2027-12-25');
+    assert.ok(natal && natal.type === 'NATIONAL_HOLIDAY', '2027-12-25 Natal must exist');
+
+    const isra = OFFICIAL_NATIONAL_HOLIDAYS.find((h) => h.date === '2027-12-26');
+    assert.ok(isra && isra.type === 'NATIONAL_HOLIDAY', '2027-12-26 Isra Mikraj must exist');
+  });
+
+  // =========================================================================
+  // TEST CQ: Academic Year Range 2026/2027 (2026-07-01 to 2027-06-30)
+  // =========================================================================
+  await runTest('CQ. buildNationalBaseCandidate for 2026/2027 strictly spans 2026-07-01 to 2027-06-30', () => {
+    const candidate = buildNationalBaseCandidate('2026/2027');
+    assert.ok(candidate.events && candidate.events.length > 0, 'Candidate events must exist');
+
+    for (const ev of candidate.events) {
+      assert.ok(ev.startDate >= '2026-07-01', `Event date ${ev.startDate} must be >= 2026-07-01`);
+      assert.ok(ev.startDate <= '2027-06-30', `Event date ${ev.startDate} must be <= 2027-06-30`);
+    }
+
+    const aug2027 = candidate.events.find((e) => e.startDate === '2027-08-17');
+    assert.strictEqual(aug2027, undefined, '2027-08-17 must NOT be in 2026/2027 academic year candidate');
+  });
+
+  // =========================================================================
+  // TEST CR: Semester 1 National Draft Projection
+  // =========================================================================
+  await runTest('CR. Semester 1 National draft projection produces CalendarDay[] for July-Dec without boundary fabrication', () => {
+    const cand = buildNationalBaseCandidate('2026/2027');
+    const days = projectNationalBaseToSemesterDraft({
+      candidate: cand,
+      academicYear: '2026/2027',
+      semester: '1',
+      calendarId: 'cal-sem1',
+    });
+
+    assert.ok(days.length > 0, 'Semester 1 days must not be empty');
+    assert.ok(days.some((d) => d.date === '2026-08-17'), '2026-08-17 Proklamasi must exist');
+    assert.ok(days.some((d) => d.date === '2026-08-25'), '2026-08-25 Maulid Nabi must exist');
+    assert.ok(days.some((d) => d.date === '2026-12-24' || d.date === '2026-12-25'), 'December Natal events must exist');
+
+    for (const d of days) {
+      assert.ok(d.date >= '2026-07-01' && d.date <= '2026-12-31', `Day ${d.date} must fall in Semester 1 window`);
+    }
+  });
+
+  // =========================================================================
+  // TEST CS: Semester 2 National Draft Projection
+  // =========================================================================
+  await runTest('CS. Semester 2 National draft projection produces CalendarDay[] for Jan-June 2027', () => {
+    const cand = buildNationalBaseCandidate('2026/2027');
+    const days = projectNationalBaseToSemesterDraft({
+      candidate: cand,
+      academicYear: '2026/2027',
+      semester: '2',
+      calendarId: 'cal-sem2',
+    });
+
+    assert.ok(days.length > 0, 'Semester 2 days must not be empty');
+    assert.ok(days.some((d) => d.date === '2027-01-01'), '2027-01-01 Tahun Baru must exist');
+    assert.ok(days.some((d) => d.date === '2027-01-05'), '2027-01-05 Isra Mikraj must exist');
+    assert.ok(days.some((d) => d.date === '2027-02-05' || d.date === '2027-02-06'), 'February Imlek events must exist');
+    assert.ok(days.some((d) => d.date >= '2027-03-08' && d.date <= '2027-03-15'), 'March Nyepi/Idulfitri events must exist');
+    assert.ok(!days.some((d) => d.date === '2027-08-17'), '2027-08-17 must NOT be in Semester 2 of 2026/2027');
+
+    for (const d of days) {
+      assert.ok(d.date >= '2027-01-01' && d.date <= '2027-06-30', `Day ${d.date} must fall in Semester 2 window`);
+    }
+  });
+
+  // =========================================================================
+  // TEST CT: Backend/Network Total Failure Still Produces National Base
+  // =========================================================================
+  await runTest('CT. Backend or network total failure produces National Base with non-empty days', async () => {
+    const provider = new GroundedCalendarSearchProvider({
+      generateGroundedContent: async () => {
+        throw new Error('503 Service Unavailable');
+      },
+    });
+
+    const req: CalendarSearchRequest = {
+      academicYear: '2026/2027',
+      province: 'Papua',
+      regency: 'Kabupaten Jayapura',
+    };
+
+    let candidates: CalendarSourceCandidate[] = [];
+    try {
+      candidates = await provider.search(req);
+    } catch {
+      candidates = [buildNationalBaseCandidate(req.academicYear)];
+    }
+
+    if (candidates.length === 0) {
+      candidates = [buildNationalBaseCandidate(req.academicYear)];
+    }
+
+    const selected = selectBestCalendarSource(candidates, req);
+    assert.ok(selected !== null, 'selected source must not be null');
+    assert.strictEqual(selected.sourceLevel, 'NATIONAL');
+
+    const draftDays = projectNationalBaseToSemesterDraft({
+      candidate: selected,
+      academicYear: req.academicYear,
+      semester: '1',
+    });
+    assert.ok(draftDays.length > 0, 'Draft days must not be empty on total provider failure');
+  });
+
+  // =========================================================================
+  // TEST CU: Manual Precedence over National Base
+  // =========================================================================
+  await runTest('CU. Manual SCHOOL_OVERRIDE on a national holiday date is preserved during National Base projection', () => {
+    const manualDay = {
+      id: 'manual-aug-17',
+      academicCalendarId: 'cal-sem1',
+      date: '2026-08-17',
+      status: 'SCHOOL_EVENT' as const,
+      notes: 'Upacara Mandiri Sekolah',
+      sourceType: 'SCHOOL_OVERRIDE' as const,
+      sourceLayer: 'SCHOOL_OVERRIDE' as const,
+      isOverridden: true,
+      category: 'SCHOOL_EVENT' as const,
+    };
+
+    const days = projectNationalBaseToSemesterDraft({
+      academicYear: '2026/2027',
+      semester: '1',
+      existingDays: [manualDay],
+    });
+
+    const targetDay = days.find((d) => d.date === '2026-08-17');
+    assert.ok(targetDay, 'Day on 2026-08-17 must exist');
+    assert.strictEqual(targetDay.sourceType, 'SCHOOL_OVERRIDE', 'SCHOOL_OVERRIDE must win over national base overlay');
+    assert.strictEqual(targetDay.notes, 'Upacara Mandiri Sekolah');
   });
 
   console.log(`\n========================================`);

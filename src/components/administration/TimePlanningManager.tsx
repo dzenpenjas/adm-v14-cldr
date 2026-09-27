@@ -25,6 +25,7 @@ import {
   confirmCalendarWorkflow,
   resetCalendarToOfficial,
   projectCandidateEventsToCalendarDays,
+  projectNationalBaseToSemesterDraft,
 } from '../../services/calendarResolver';
 import {
   generateKalenderAkademik,
@@ -36,6 +37,7 @@ import {
   CalendarSearchDiagnostic,
   CalendarSearchDiagnosticReason,
   CalendarSourceLevel,
+  buildNationalBaseCandidate,
 } from '../../services/calendarProvider';
 
 /**
@@ -356,15 +358,34 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
         onlineSuccess = true;
         setAiSearchStatus('SUCCESS');
         setOnlineSearchError(null);
-        setWorkflowStatus('UNRESOLVED');
 
         if (candidateLevel === 'NATIONAL') {
-          setResolutionMessage('Acuan Nasional (SKB 3 Menteri) tersedia — lengkapi batas tanggal semester.');
+          const activeSem = semester === '2' || semester === 2 ? 2 : 1;
+          setSourceType('NATIONAL_HOLIDAY_OVERLAY');
+          setSourceName('Acuan Nasional (SKB 3 Menteri)');
+          setSourceAuthority(onlineRes.selectedSource.authority);
+          setSourceDocumentNumber(onlineRes.selectedSource.documentNumber || '');
+          setSourceUrl(onlineRes.selectedSource.sourceUrl);
+
+          const projectedDays = projectNationalBaseToSemesterDraft({
+            candidate: onlineRes.selectedSource,
+            academicYear: academicSetting.academicYear || academicYear || onlineRes.selectedSource.academicYear,
+            semester: semester || '1',
+            calendarId: calendar?.id || `cal-${academicSetting.id}`,
+            existingDays: days,
+          });
+          setDays(projectedDays);
+
+          setWorkflowStatus('AUTO_RESOLVED');
+          setResolutionStatus('PARTIALLY_RESOLVED');
+          setResolutionMessage(`Kalender pendidikan Kabupaten/Kota dan Provinsi belum ditemukan. Data resmi nasional telah diterapkan otomatis sebagai data awal Semester ${activeSem}.`);
+
           if (showNotification) {
-            setSaveNotification('Acuan Nasional tersedia — klik "Gunakan sebagai Acuan" untuk menerapkan.');
+            setSaveNotification(`Acuan Nasional diterapkan otomatis untuk Semester ${activeSem} — klik "Konfirmasi Kalender" jika sudah sesuai.`);
             setTimeout(() => setSaveNotification(null), 4000);
           }
         } else {
+          setWorkflowStatus('UNRESOLVED');
           setResolutionMessage(`Sumber acuan ${candidateLevel === 'REGENCY' ? 'Kabupaten/Kota' : 'Provinsi'} ditemukan — tinjau sebelum digunakan.`);
           if (showNotification) {
             setSaveNotification('Sumber acuan ditemukan online — klik "Gunakan sebagai Acuan" untuk menerapkan.');
@@ -428,12 +449,33 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
           setTimeout(() => setSaveNotification(null), 3500);
         }
       } else {
-        // 3. MANUAL FALLBACK
-        setWorkflowStatus('UNRESOLVED');
-        setResolutionStatus(res.resolutionStatus);
-        setResolutionMessage(res.diagnostic);
+        // 3. NATIONAL BASE DETERMINISTIC FALLBACK (when both online search and local regional cache fail)
+        const natCandidate = buildNationalBaseCandidate(academicYear);
+        const activeSem = semester === '2' || semester === 2 ? 2 : 1;
+
+        setOnlineDiscovery(natCandidate);
+        setSourceType('NATIONAL_HOLIDAY_OVERLAY');
+        setSourceName('Acuan Nasional (SKB 3 Menteri)');
+        setSourceAuthority(natCandidate.authority);
+        setSourceDocumentNumber(natCandidate.documentNumber || '');
+        setSourceUrl(natCandidate.sourceUrl);
+
+        const projectedDays = projectNationalBaseToSemesterDraft({
+          candidate: natCandidate,
+          academicYear: academicSetting.academicYear || academicYear || natCandidate.academicYear,
+          semester: semester || '1',
+          calendarId: calendar?.id || `cal-${academicSetting.id}`,
+          existingDays: days,
+        });
+        setDays(projectedDays);
+
+        setWorkflowStatus('AUTO_RESOLVED');
+        setResolutionStatus('PARTIALLY_RESOLVED');
+        const natMessage = `Kalender pendidikan Kabupaten/Kota dan Provinsi belum ditemukan. Data resmi nasional telah diterapkan otomatis sebagai data awal Semester ${activeSem}.`;
+        setResolutionMessage(natMessage);
+
         if (showNotification) {
-          setSaveNotification(res.diagnostic);
+          setSaveNotification(`Acuan Nasional diterapkan otomatis untuk Semester ${activeSem} — klik "Konfirmasi Kalender" jika sudah sesuai.`);
           setTimeout(() => setSaveNotification(null), 4000);
         }
       }
@@ -1067,7 +1109,7 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
                 <div className="flex items-center gap-2">
                   <span className="font-bold text-amber-900">
                     {onlineDiscovery.sourceLevel === 'NATIONAL'
-                      ? 'Acuan Nasional (SKB 3 Menteri) — Sumber nasional ditemukan sebagai referensi. Kalender semester daerah belum ditemukan.'
+                      ? 'Acuan Nasional — Diterapkan Otomatis'
                       : 'Hasil Pencarian — Sumber Acuan Ditemukan'}
                   </span>
                   <span className="px-2 py-0.5 bg-amber-200 text-amber-900 rounded font-semibold text-[10px]">
@@ -1083,14 +1125,28 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
                     {onlineDiscovery.authorityType === 'OFFICIAL' ? 'Resmi' : 'Nonresmi — Harap Ditinjau'}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => handleApplyOnlineCandidate(onlineDiscovery)}
-                  className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded text-xs transition-colors cursor-pointer"
-                >
-                  Gunakan sebagai Acuan
-                </button>
+                {onlineDiscovery.sourceLevel === 'NATIONAL' ? (
+                  <span className="px-3 py-1 bg-blue-100 text-blue-800 border border-blue-300 font-bold rounded text-xs inline-flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" />
+                    Diterapkan Otomatis
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleApplyOnlineCandidate(onlineDiscovery)}
+                    className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded text-xs transition-colors cursor-pointer"
+                  >
+                    Gunakan sebagai Acuan
+                  </button>
+                )}
               </div>
+
+              {onlineDiscovery.sourceLevel === 'NATIONAL' && (
+                <div className="p-2.5 bg-blue-50/90 border border-blue-200 rounded text-[11px] text-blue-950 font-medium space-y-0.5">
+                  <p>Kalender pendidikan Kabupaten/Kota dan Provinsi belum ditemukan.</p>
+                  <p>Data resmi nasional telah diterapkan otomatis sebagai data awal Semester {activeSem}.</p>
+                </div>
+              )}
 
               {onlineDiscovery.authorityType === 'NON_OFFICIAL' && (
                 <div className="p-2 bg-amber-100/70 border border-amber-300 rounded text-[11px] text-amber-900 font-medium">
@@ -1112,7 +1168,11 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
                 <p>
                   <strong>Semester Aktif:</strong> Semester {activeSem} ({activeSem === 1 ? 'Ganjil' : 'Genap'})
                 </p>
-                {activeSemProjection.hasDates ? (
+                {onlineDiscovery.sourceLevel === 'NATIONAL' ? (
+                  <p className="text-slate-600 italic">
+                    Batas awal/akhir semester daerah belum tersedia dari sumber yang ditemukan. Agenda nasional tetap dapat digunakan sebagai acuan awal.
+                  </p>
+                ) : activeSemProjection.hasDates ? (
                   <p>
                     <strong>Batas Semester {activeSem}:</strong> {activeSemProjection.startDate} s/d {activeSemProjection.endDate}
                   </p>

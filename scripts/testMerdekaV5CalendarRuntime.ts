@@ -735,4 +735,22 @@ runTest('BE. Draft only: Applying online candidate updates draft states without 
   );
 });
 
+// -----------------------------------------------------------------------------
+// TEST CV: UI National auto apply (no manual click requirement)
+// -----------------------------------------------------------------------------
+runTest('CV. UI National auto apply projects National Base directly to draft without manual click', () => {
+  assert.ok(
+    tpmSource.includes('projectNationalBaseToSemesterDraft({'),
+    'TimePlanningManager must invoke projectNationalBaseToSemesterDraft automatically'
+  );
+  assert.ok(
+    tpmSource.includes('Acuan Nasional — Diterapkan Otomatis'),
+    'TimePlanningManager must display "Acuan Nasional — Diterapkan Otomatis" for NATIONAL level'
+  );
+  assert.ok(
+    tpmSource.includes('Diterapkan Otomatis'),
+    'TimePlanningManager must display "Diterapkan Otomatis" badge for NATIONAL candidate'
+  );
+});
+
 console.log(`\nAll ${totalTests} Merdeka V5 Academic Calendar Runtime audit tests PASSED successfully!\n`);

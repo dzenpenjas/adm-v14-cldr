@@ -300,7 +300,7 @@ export function buildNationalBaseCandidate(academicYear?: string): CalendarSourc
   const endYear = cleanYear.includes('/') ? (parseInt(cleanYear.split('/')[1], 10) || startYear + 1) : startYear + 1;
 
   const startDateStr = `${startYear}-07-01`;
-  const endDateStr = `${endYear}-07-31`;
+  const endDateStr = `${endYear}-06-30`;
 
   const nationalEvents: CalendarSourceEvent[] = OFFICIAL_NATIONAL_HOLIDAYS
     .filter((h) => h.date >= startDateStr && h.date <= endDateStr)

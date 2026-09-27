@@ -17,7 +17,7 @@ import {
   RegionalEducationCalendar,
 } from '../data/calendar';
 import { resolveSemester } from './jpEngine';
-import { CalendarSourceCandidate, CalendarSourceEvent } from './calendarProvider';
+import { CalendarSourceCandidate, CalendarSourceEvent, buildNationalBaseCandidate } from './calendarProvider';
 
 export interface CalendarResolutionResult {
   isResolved: boolean;
@@ -758,4 +758,43 @@ export function projectCandidateEventsToCalendarDays(
   }
 
   return Array.from(daysMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+}
+
+export interface ProjectNationalBaseParams {
+  candidate?: CalendarSourceCandidate;
+  academicYear?: string;
+  semester?: '1' | '2' | string;
+  calendarId?: string;
+  existingDays?: CalendarDay[];
+}
+
+/**
+ * Projects National Base events directly to active semester draft without fabricating regional semester boundary dates.
+ * Projection window:
+ * - Semester 1 = Jul–Des startYear
+ * - Semester 2 = Jan–Jun endYear
+ */
+export function projectNationalBaseToSemesterDraft(params: ProjectNationalBaseParams): CalendarDay[] {
+  const cleanYear = (params.academicYear || params.candidate?.academicYear || '2026/2027').trim();
+  const startYear = parseInt(cleanYear.slice(0, 4), 10) || 2026;
+  const endYear = cleanYear.includes('/') ? (parseInt(cleanYear.split('/')[1], 10) || startYear + 1) : startYear + 1;
+
+  const semStr = String(params.semester || '1').toLowerCase();
+  const isSem2 = semStr === '2' || semStr.includes('genap') || semStr.startsWith('2');
+
+  const windowStart = isSem2 ? `${endYear}-01-01` : `${startYear}-07-01`;
+  const windowEnd = isSem2 ? `${endYear}-06-30` : `${startYear}-12-31`;
+
+  const natCandidate: CalendarSourceCandidate = params.candidate
+    ? { ...params.candidate, events: undefined }
+    : buildNationalBaseCandidate(cleanYear);
+
+  return projectCandidateEventsToCalendarDays({
+    candidate: natCandidate,
+    startDate: windowStart,
+    endDate: windowEnd,
+    calendarId: params.calendarId || `cal-nat-${cleanYear}`,
+    existingDays: params.existingDays,
+    academicYear: cleanYear,
+  });
 }
