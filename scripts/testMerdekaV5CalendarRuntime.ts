@@ -220,18 +220,25 @@ runTest('7. Online calendar search discovery does not invoke onSaveCalendar auto
 // -----------------------------------------------------------------------------
 runTest('8. Candidate without exact semesterStartDate/semesterEndDate shows guidance and does not invent dates', () => {
   assert.ok(
-    tpmSource.includes('Sumber resmi ditemukan, tetapi batas tanggal semester tidak dapat ditentukan secara terverifikasi'),
+    tpmSource.includes('Sumber acuan ditemukan, tetapi batas tanggal semester tidak dapat ditentukan secara terverifikasi') ||
+      tpmSource.includes('Sumber acuan ') && tpmSource.includes('ditemukan, tetapi batas tanggal semester tidak dapat ditentukan secara terverifikasi'),
     'TimePlanningManager must warn user when candidate lacks exact semester boundary dates'
   );
 });
 
 // -----------------------------------------------------------------------------
-// TEST 9: NATIONAL source does not automatically populate semester boundaries
+// TEST 9: NATIONAL source acts as valid National Base fallback
 // -----------------------------------------------------------------------------
-runTest('9. NATIONAL source level acts as reference overlay without auto-populating semester boundaries', () => {
+runTest('9. NATIONAL source level acts as valid National Base fallback without auto-populating semester boundaries', () => {
   assert.ok(
-    tpmSource.includes('Sumber nasional ditemukan sebagai referensi. Kalender semester daerah belum ditemukan.'),
-    'TimePlanningManager must display national candidate strictly as reference overlay'
+    tpmSource.includes('Acuan Nasional (SKB 3 Menteri) tersedia') ||
+      tpmSource.includes('Acuan Nasional (SKB 3 Menteri)'),
+    'TimePlanningManager must display NATIONAL candidate as Acuan Nasional'
+  );
+  assert.ok(
+    tpmSource.includes("candidate.sourceLevel === 'NATIONAL'") &&
+      tpmSource.includes('PARTIALLY_RESOLVED'),
+    'NATIONAL candidate must act as usable fallback with PARTIALLY_RESOLVED status'
   );
 });
 
