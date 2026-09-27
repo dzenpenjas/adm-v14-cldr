@@ -15,11 +15,14 @@ import {
   normalizeRegionName,
   classifyCalendarSourceAuthority,
   isSafeCalendarSourceUrl,
+  buildNationalBaseCandidate,
 } from '../src/services/calendarProvider';
 import {
   isOfficialCalendarSourceUrl,
   sanitizeErrorCategory,
   classifyProviderError,
+  GroundedGenerateFn,
+  extractGroundedWebSources,
 } from './calendarProvider';
 
 /**
@@ -419,12 +422,17 @@ export function checkGeographicMatch(
       : '';
 
     if (isKotaReq) {
-      // Must match Kota indicators for this coreName
+      // Must match Kota indicators for this coreName and NOT match Kabupaten or forbidden compound suffixes
       const kotaPatterns = [
         new RegExp(`\\bkota\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
         new RegExp(`\\bpemkot\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
         new RegExp(`\\bkotamadya\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\bpemerintah\\s+kota\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\bdisdik\\s+kota\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\bdinas\\s+pendidikan\\s+kota\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\b${escapeRegex(coreName)}\\s+kota${forbiddenSuffixPattern}\\b`, 'i'),
         new RegExp(`\\b${escapeRegex(coreName.replace(/\s+/g, ''))}kota\\.go\\.id\\b`, 'i'),
+        new RegExp(`\\b${escapeRegex(coreName.replace(/\s+/g, ''))}kota\\b`, 'i'),
       ];
 
       return kotaPatterns.some((pat) => pat.test(combined));
@@ -436,7 +444,13 @@ export function checkGeographicMatch(
         new RegExp(`\\bkabupaten\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
         new RegExp(`\\bkab\\.?\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
         new RegExp(`\\bpemkab\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\bpemerintah\\s+kabupaten\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\bdisdik\\s+kab(?:upaten)?\\.?\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\bdinas\\s+pendidikan\\s+kab(?:upaten)?\\.?\\s+${escapeRegex(coreName)}${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\b${escapeRegex(coreName)}\\s+kabupaten${forbiddenSuffixPattern}\\b`, 'i'),
+        new RegExp(`\\b${escapeRegex(coreName)}\\s+kab${forbiddenSuffixPattern}\\b`, 'i'),
         new RegExp(`\\b${escapeRegex(coreName.replace(/\s+/g, ''))}kab\\.go\\.id\\b`, 'i'),
+        new RegExp(`\\b${escapeRegex(coreName.replace(/\s+/g, ''))}kab\\b`, 'i'),
       ];
 
       return kabPatterns.some((pat) => pat.test(combined));
@@ -673,10 +687,10 @@ export async function readBoundedStream(
 }
 
 /**
- * Default HTTP fetcher with timeout, size bound, redirect follow, HTTPS .go.id enforcement, and PDF text extraction.
+ * Default HTTP fetcher with timeout, size bound, redirect follow, safe HTTPS enforcement, and PDF text extraction.
  */
 export const defaultSourceContentFetcher: SourceContentFetcher = async (url: string): Promise<FetchedSourceContent | null> => {
-  if (!isOfficialCalendarSourceUrl(url)) return null;
+  if (!isSafeCalendarSourceUrl(url)) return null;
 
   try {
     const controller = new AbortController();
@@ -694,7 +708,7 @@ export const defaultSourceContentFetcher: SourceContentFetcher = async (url: str
     clearTimeout(timeoutId);
 
     const finalUrl = res.url || url;
-    if (!isOfficialCalendarSourceUrl(finalUrl)) {
+    if (!isSafeCalendarSourceUrl(finalUrl)) {
       return null;
     }
 
@@ -843,7 +857,7 @@ export function extractOfficialLinksFromHtml(
       continue;
     }
 
-    if (!isOfficialCalendarSourceUrl(resolvedUrl)) {
+    if (!isSafeCalendarSourceUrl(resolvedUrl)) {
       continue;
     }
 
@@ -988,6 +1002,7 @@ export type PlainGeminiGenerateFn = (
 export interface TrustedCalendarSearchProviderOptions {
   apiKey?: string;
   discoverCandidateUrls?: (request: CalendarSearchRequest, level: CalendarSourceLevel) => Promise<string[]>;
+  generateGroundedContent?: GroundedGenerateFn;
   generatePlainContent?: PlainGeminiGenerateFn;
   fetchSourceContent?: SourceContentFetcher;
   sleep?: (ms: number) => Promise<void>;
@@ -1053,13 +1068,14 @@ Kembalikan HANYA JSON array dengan satu objek:
 /**
  * Trusted Calendar Search Provider.
  * Architecture:
- * 1. Web / Domain Discovery (Official .go.id patterns + Plain Gemini helper, NO Google Search Grounding tool)
- * 2. Strict Official HTTP Source & Content Verification
- * 3. Plain Gemini Extraction (Free-tier safe, zero date hallucination)
- * 4. Short-circuiting canonical hierarchy: REGENCY -> PROVINCE -> NATIONAL
+ * 1. Web Discovery via Google Search Grounding (gemini-2.5-flash-lite) with resilient fallback
+ * 2. Safe HTTPS Source Content & Strict Evidence Verification
+ * 3. Deterministic Category & Date Extraction (evidence-bound)
+ * 4. Priority hierarchy: REGENCY OFFICIAL > REGENCY NON_OFFICIAL > PROVINCE OFFICIAL > PROVINCE NON_OFFICIAL > NATIONAL_BASE
  */
 export class TrustedCalendarSearchProvider implements CalendarDataProvider {
   private customDiscoverUrls?: (request: CalendarSearchRequest, level: CalendarSourceLevel) => Promise<string[]>;
+  private customGenerateGrounded?: GroundedGenerateFn;
   private customGeneratePlain?: PlainGeminiGenerateFn;
   private fetchSource: SourceContentFetcher;
   private sleepFn: (ms: number) => Promise<void>;
@@ -1067,6 +1083,7 @@ export class TrustedCalendarSearchProvider implements CalendarDataProvider {
 
   constructor(options?: TrustedCalendarSearchProviderOptions) {
     this.customDiscoverUrls = options?.discoverCandidateUrls;
+    this.customGenerateGrounded = options?.generateGroundedContent;
     this.customGeneratePlain = options?.generatePlainContent;
     this.fetchSource = options?.fetchSourceContent || defaultSourceContentFetcher;
     this.sleepFn = options?.sleep || ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -1082,6 +1099,88 @@ export class TrustedCalendarSearchProvider implements CalendarDataProvider {
         headers: { 'User-Agent': 'aistudio-build' },
       },
     });
+  }
+
+  /**
+   * Primary Web Discovery using Google Search Grounding with gemini-2.5-flash-lite.
+   * Tolerates 429/quota/temporary errors without failing the overall search.
+   */
+  private async discoverCandidateUrlsWithGrounding(
+    request: CalendarSearchRequest,
+    level: CalendarSourceLevel,
+    modelAttempts: CalendarModelAttemptDiagnostic[]
+  ): Promise<string[]> {
+    const targetRegion = level === 'REGENCY'
+      ? `${request.regency || ''} ${request.province || ''}`
+      : level === 'PROVINCE'
+      ? (request.province || '')
+      : 'Nasional';
+
+    const searchQuery = level === 'REGENCY'
+      ? `Kalender Pendidikan ${request.regency || ''} ${request.province || ''} ${request.academicYear}`
+      : level === 'PROVINCE'
+      ? `Kalender Pendidikan ${request.province || ''} ${request.academicYear}`
+      : `Kalender Pendidikan Nasional ${request.academicYear}`;
+
+    const prompt = `Cari informasi dan tautan dokumen Kalender Pendidikan (Kaldik) Tahun Ajaran ${request.academicYear} untuk:
+Wilayah: ${targetRegion}
+Tingkat: ${level}
+Kata Kunci Pencarian: ${searchQuery}
+
+Kembalikan tautan sumber web yang memuat kalender pendidikan atau jadwal tahun ajaran ${request.academicYear}.`;
+
+    if (this.customGenerateGrounded) {
+      try {
+        const res = await this.customGenerateGrounded(prompt, 'gemini-2.5-flash-lite');
+        modelAttempts.push({ model: 'gemini-2.5-flash-lite', status: 'SUCCESS' });
+        const rawSources = extractGroundedWebSources(res);
+        const groundedUrls = rawSources.map((s) => s.uri).filter(isSafeCalendarSourceUrl);
+        const textUrls = this.parseUrlsFromJson(res.text || '');
+        return Array.from(new Set([...groundedUrls, ...textUrls]));
+      } catch (err) {
+        modelAttempts.push({
+          model: 'gemini-2.5-flash-lite',
+          status: 'ERROR',
+          errorCategory: sanitizeErrorCategory(err),
+        });
+        return [];
+      }
+    }
+
+    const ai = this.getAIClient();
+    if (!ai) return [];
+
+    const modelsToTry = ['gemini-2.5-flash-lite', 'gemini-3.8-flash'];
+    for (const model of modelsToTry) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            tools: [{ googleSearch: {} }],
+          },
+        });
+
+        modelAttempts.push({ model, status: 'SUCCESS' });
+        const rawSources = extractGroundedWebSources(response);
+        const groundedUrls = rawSources.map((s) => s.uri).filter(isSafeCalendarSourceUrl);
+        const textUrls = this.parseUrlsFromJson(response.text || '');
+        const combined = Array.from(new Set([...groundedUrls, ...textUrls]));
+        if (combined.length > 0) {
+          return combined;
+        }
+      } catch (err: any) {
+        modelAttempts.push({
+          model,
+          status: 'ERROR',
+          errorCategory: sanitizeErrorCategory(err),
+        });
+        // 429/quota/tools error: do not crash or throw, proceed to next model or fallback discovery!
+        continue;
+      }
+    }
+
+    return [];
   }
 
   /**
@@ -1191,8 +1290,14 @@ Ketentuan:
     sourceText: string,
     modelAttempts: CalendarModelAttemptDiagnostic[]
   ): Promise<CalendarSourceCandidate> {
+    const isOfficial = isOfficialCalendarSourceUrl(verifiedUrl);
+    const authorityType: CalendarSourceAuthorityType = isOfficial ? 'OFFICIAL' : 'NON_OFFICIAL';
+    const confidence: 'HIGH' | 'MEDIUM' = isOfficial ? 'HIGH' : 'MEDIUM';
+
     const fallbackCandidate: CalendarSourceCandidate = {
       sourceLevel: level,
+      authorityType,
+      confidence,
       province: level === 'NATIONAL' ? undefined : request.province,
       regency: level === 'REGENCY' ? request.regency : undefined,
       academicYear: request.academicYear.trim(),
@@ -1326,6 +1431,8 @@ Ketentuan:
 
         return {
           sourceLevel: level,
+          authorityType,
+          confidence,
           province: level === 'NATIONAL' ? undefined : (typeof item.province === 'string' && item.province.trim() ? item.province.trim() : request.province),
           regency: level === 'REGENCY' ? (typeof item.regency === 'string' && item.regency.trim() ? item.regency.trim() : request.regency) : undefined,
           academicYear: request.academicYear.trim(),
@@ -1377,19 +1484,26 @@ Ketentuan:
       const modelAttempts: CalendarModelAttemptDiagnostic[] = [];
       const attemptedUrls = new Set<string>();
       const candidateUrlsAttempted = new Set<string>();
-      let verifiedOfficialCount = 0;
+      let verifiedCount = 0;
       const stageCandidates: CalendarSourceCandidate[] = [];
 
       const verifyCandidateUrls = async (urls: string[], isDiscovered: boolean): Promise<boolean> => {
         const freshUrls: string[] = [];
         for (const u of urls) {
           const trimmed = u ? u.trim() : '';
-          if (trimmed && isOfficialCalendarSourceUrl(trimmed) && !attemptedUrls.has(trimmed)) {
+          if (trimmed && isSafeCalendarSourceUrl(trimmed) && !attemptedUrls.has(trimmed)) {
             freshUrls.push(trimmed);
           }
         }
 
-        const urlsToTry = freshUrls.slice(0, 8);
+        // Sort so that OFFICIAL (.go.id) URLs are fetched and evaluated first
+        const sortedUrls = [...freshUrls].sort((a, b) => {
+          const aOff = isOfficialCalendarSourceUrl(a) ? 0 : 1;
+          const bOff = isOfficialCalendarSourceUrl(b) ? 0 : 1;
+          return aOff - bOff;
+        });
+
+        const urlsToTry = sortedUrls.slice(0, 10);
         for (const url of urlsToTry) {
           attemptedUrls.add(url);
           if (isDiscovered) {
@@ -1408,9 +1522,9 @@ Ketentuan:
             continue;
           }
 
-          verifiedOfficialCount++;
+          verifiedCount++;
 
-          // Plain Gemini extraction (or metadata fallback)
+          // Extract candidate (evidence-bound)
           const candidate = await this.extractCandidateFromVerifiedSource(
             request,
             level,
@@ -1420,13 +1534,16 @@ Ketentuan:
           );
 
           stageCandidates.push(candidate);
-          return true; // Found verified and relevant official source for this stage!
+          // If candidate is OFFICIAL, we can short-circuit this candidate batch immediately
+          if (candidate.authorityType === 'OFFICIAL') {
+            return true;
+          }
         }
 
-        return false;
+        return stageCandidates.length > 0;
       };
 
-      // PASS 1: Discovered URLs + Deterministic probes
+      // PASS 1A: Google Search Grounding Discovery (primary)
       const discoveredUrls: string[] = [];
       const deterministicUrls: string[] = [];
 
@@ -1440,10 +1557,13 @@ Ketentuan:
           // ignore custom discovery errors
         }
       } else {
-        // A. Official seed roots (max 6)
-        const seedRoots = generateOfficialSeedRoots(request, level);
+        if (isAiConfigured) {
+          const groundingUrls = await this.discoverCandidateUrlsWithGrounding(request, level, modelAttempts);
+          discoveredUrls.push(...groundingUrls);
+        }
 
-        // B. Extract links from reachable real HTML seed pages (crawl depth 1)
+        // PASS 1B: Seed roots + real HTML link extraction
+        const seedRoots = generateOfficialSeedRoots(request, level);
         for (const seedUrl of seedRoots) {
           try {
             const fetchedSeed = await this.fetchSource(seedUrl);
@@ -1462,11 +1582,11 @@ Ketentuan:
           }
         }
 
-        // C. Deterministic candidate URLs (always included in Pass 1)
+        // Deterministic candidate URLs
         deterministicUrls.push(...generateDeterministicOfficialUrls(request, level));
       }
 
-      // Execute PASS 1: try discovered URLs first, then deterministic probes
+      // Execute PASS 1
       let pass1Found = await verifyCandidateUrls(discoveredUrls, true);
       if (!pass1Found && deterministicUrls.length > 0) {
         pass1Found = await verifyCandidateUrls(deterministicUrls, false);
@@ -1479,7 +1599,7 @@ Ketentuan:
       }
 
       const rawCandidateCount = candidateUrlsAttempted.size;
-      const responseReceived = verifiedOfficialCount > 0 || modelAttempts.some((m) => m.status === 'SUCCESS');
+      const responseReceived = verifiedCount > 0 || modelAttempts.some((m) => m.status === 'SUCCESS');
       const textPresent = stageCandidates.length > 0;
       const acceptedCandidateCount = stageCandidates.length;
 
@@ -1489,14 +1609,26 @@ Ketentuan:
         responseReceived,
         textPresent,
         rawCandidateCount,
-        groundingSourceCount: rawCandidateCount, // compatible alias
-        resolvedGroundingCount: verifiedOfficialCount, // compatible alias
+        groundingSourceCount: rawCandidateCount,
+        resolvedGroundingCount: verifiedCount,
         acceptedCandidateCount,
+        discoveredUrlCount: discoveredUrls.length,
+        fetchedUrlCount: candidateUrlsAttempted.size,
       };
 
       stages.push(stageDiag);
 
       if (stageCandidates.length > 0) {
+        // Sort stage candidates: OFFICIAL > NON_OFFICIAL, VERIFIED > PARTIAL
+        stageCandidates.sort((a, b) => {
+          const aAuth = (a.authorityType || classifyCalendarSourceAuthority(a.sourceUrl)) === 'NON_OFFICIAL' ? 1 : 0;
+          const bAuth = (b.authorityType || classifyCalendarSourceAuthority(b.sourceUrl)) === 'NON_OFFICIAL' ? 1 : 0;
+          if (aAuth !== bAuth) return aAuth - bAuth;
+          const aVer = a.verificationStatus === 'VERIFIED' ? 0 : 1;
+          const bVer = b.verificationStatus === 'VERIFIED' ? 0 : 1;
+          return aVer - bVer;
+        });
+
         acceptedCandidates = stageCandidates;
         return true; // Short-circuit!
       }
@@ -1547,7 +1679,7 @@ Ketentuan:
       };
     }
 
-    // Evaluate diagnostic reason if no candidates accepted
+    // Evaluate diagnostic reason if no online candidates accepted
     let reason: CalendarSearchDiagnosticReason = 'NO_OFFICIAL_SOURCE';
 
     const allModelAttemptsFailed =
@@ -1565,8 +1697,11 @@ Ketentuan:
       reason = 'NO_OFFICIAL_SOURCE';
     }
 
+    // Never return empty calendar: attach National Base candidate
+    const nationalBaseCandidate = buildNationalBaseCandidate(request.academicYear);
+
     return {
-      candidates: [],
+      candidates: [nationalBaseCandidate],
       diagnostic: {
         aiConfigured: isAiConfigured,
         reason,

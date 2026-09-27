@@ -1,3 +1,8 @@
+import {
+  OFFICIAL_NATIONAL_HOLIDAYS,
+  OFFICIAL_NATIONAL_HOLIDAY_SOURCES,
+} from '../data/calendar/nationalHolidays';
+
 export type CalendarSourceAuthorityType =
   | 'OFFICIAL'
   | 'NON_OFFICIAL';
@@ -109,6 +114,8 @@ export interface CalendarStageDiagnostic {
   groundingSourceCount: number;
   resolvedGroundingCount: number;
   acceptedCandidateCount: number;
+  discoveredUrlCount?: number;
+  fetchedUrlCount?: number;
 }
 
 export interface CalendarSearchDiagnostic {
@@ -284,36 +291,79 @@ export function isUsableCalendarCandidate(
 }
 
 /**
+ * Builds deterministic verified National Base candidate from repository SSOT.
+ * Guarantees that the calendar never ends completely empty.
+ */
+export function buildNationalBaseCandidate(academicYear?: string): CalendarSourceCandidate {
+  const cleanYear = (academicYear || '2026/2027').trim();
+  const startYear = parseInt(cleanYear.slice(0, 4), 10) || 2026;
+  const endYear = cleanYear.includes('/') ? (parseInt(cleanYear.split('/')[1], 10) || startYear + 1) : startYear + 1;
+
+  const startDateStr = `${startYear}-07-01`;
+  const endDateStr = `${endYear}-07-31`;
+
+  const nationalEvents: CalendarSourceEvent[] = OFFICIAL_NATIONAL_HOLIDAYS
+    .filter((h) => h.date >= startDateStr && h.date <= endDateStr)
+    .map((h) => ({
+      name: h.name,
+      startDate: h.date,
+      category: (h.type === 'CUTI_BERSAMA' ? 'OTHER' : 'HOLIDAY') as CalendarSourceEvent['category'],
+    }));
+
+  const sourceMetadata = OFFICIAL_NATIONAL_HOLIDAY_SOURCES[startYear] || OFFICIAL_NATIONAL_HOLIDAY_SOURCES[2026];
+
+  return {
+    sourceLevel: 'NATIONAL',
+    authorityType: 'OFFICIAL',
+    confidence: 'HIGH',
+    academicYear: cleanYear,
+    authority: sourceMetadata?.authority || 'Kementerian Agama, Kementerian Ketenagakerjaan, Kementerian Pendayagunaan Aparatur Negara dan Reformasi Birokrasi RI',
+    documentTitle: sourceMetadata?.documentTitle || `Pedoman Hari Libur Nasional & Cuti Bersama ${cleanYear}`,
+    documentNumber: sourceMetadata?.documentNumber || 'SKB 3 Menteri',
+    sourceUrl: sourceMetadata?.sourceUrl || 'https://setkab.go.id',
+    publicationDate: sourceMetadata?.publicationDate,
+    effectiveDate: sourceMetadata?.signedDate,
+    semester1StartDate: undefined,
+    semester1EndDate: undefined,
+    semester2StartDate: undefined,
+    semester2EndDate: undefined,
+    semesterStartDate: undefined,
+    semesterEndDate: undefined,
+    events: nationalEvents,
+    verificationStatus: 'PARTIAL',
+    retrievedAt: new Date().toISOString(),
+  };
+}
+
+/**
  * Selects the best calendar candidate according to geographic & authority hierarchy:
- * 1. Exact academicYear matching
- * 2. Usable candidates only (VERIFIED or PARTIAL with valid sourceUrl & authority)
- * 3. Priority:
- *    - Matching REGENCY (OFFICIAL > NON_OFFICIAL)
- *    - Matching PROVINCE (OFFICIAL > NON_OFFICIAL)
- *    - NATIONAL (OFFICIAL > NON_OFFICIAL)
+ * 1. REGENCY OFFICIAL
+ * 2. REGENCY NON_OFFICIAL
+ * 3. PROVINCE OFFICIAL
+ * 4. PROVINCE NON_OFFICIAL
+ * 5. NATIONAL (OFFICIAL > NON_OFFICIAL)
+ * 6. NATIONAL_BASE (Never empty)
  */
 export function selectBestCalendarSource(
   candidates: CalendarSourceCandidate[],
   request: CalendarSearchRequest
 ): CalendarSourceCandidate | null {
-  if (!candidates || candidates.length === 0 || !request) {
+  if (!request) {
     return null;
   }
 
-  const reqYear = request.academicYear.trim();
+  const reqYear = (request.academicYear || '').trim();
   const reqProvince = normalizeRegionName(request.province);
   const reqRegency = normalizeRegionName(request.regency);
 
-  const usable = candidates.filter((c) => {
-    if (!isUsableCalendarCandidate(c)) return false;
-    return c.academicYear.trim() === reqYear;
-  });
+  const usable = Array.isArray(candidates)
+    ? candidates.filter((c) => {
+        if (!isUsableCalendarCandidate(c)) return false;
+        return c.academicYear.trim() === reqYear;
+      })
+    : [];
 
-  if (usable.length === 0) {
-    return null;
-  }
-
-  // Sort candidates within a level: OFFICIAL beats NON_OFFICIAL, VERIFIED beats PARTIAL
+  // Sort candidates within a scope: OFFICIAL beats NON_OFFICIAL, VERIFIED beats PARTIAL
   const sortCandidates = (items: CalendarSourceCandidate[]): CalendarSourceCandidate[] => {
     return [...items].sort((a, b) => {
       const aAuth = (a.authorityType || classifyCalendarSourceAuthority(a.sourceUrl)) === 'NON_OFFICIAL' ? 1 : 0;
@@ -326,7 +376,7 @@ export function selectBestCalendarSource(
     });
   };
 
-  // 1. REGENCY check
+  // 1. REGENCY check (REGENCY OFFICIAL > REGENCY NON_OFFICIAL)
   if (reqRegency) {
     const regencyCandidates = usable.filter((c) => {
       if (c.sourceLevel !== 'REGENCY') return false;
@@ -346,7 +396,7 @@ export function selectBestCalendarSource(
     }
   }
 
-  // 2. PROVINCE check
+  // 2. PROVINCE check (PROVINCE OFFICIAL > PROVINCE NON_OFFICIAL)
   if (reqProvince) {
     const provinceCandidates = usable.filter((c) => {
       if (c.sourceLevel !== 'PROVINCE') return false;
@@ -360,14 +410,15 @@ export function selectBestCalendarSource(
     }
   }
 
-  // 3. NATIONAL check
+  // 3. NATIONAL check (NATIONAL OFFICIAL > NATIONAL NON_OFFICIAL)
   const nationalCandidates = usable.filter((c) => c.sourceLevel === 'NATIONAL');
   if (nationalCandidates.length > 0) {
     const sorted = sortCandidates(nationalCandidates);
     return sorted[0];
   }
 
-  return null;
+  // 4. Default fallback: NATIONAL_BASE
+  return buildNationalBaseCandidate(request.academicYear);
 }
 
 /**

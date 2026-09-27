@@ -353,27 +353,25 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
       if (onlineRes.selectedSource) {
         setOnlineDiscovery(onlineRes.selectedSource);
         candidateLevel = onlineRes.selectedSource.sourceLevel;
+        onlineSuccess = true;
+        setAiSearchStatus('SUCCESS');
+        setOnlineSearchError(null);
+        setWorkflowStatus('UNRESOLVED');
 
         if (candidateLevel === 'NATIONAL') {
-          setAiSearchStatus('NOT_FOUND');
-          setOnlineSearchError(null);
-          setResolutionMessage('Pencarian AI menemukan sumber nasional sebagai referensi, tetapi belum menemukan Kalender Pendidikan daerah.');
+          setResolutionMessage('Acuan Nasional (SKB 3 Menteri) tersedia — lengkapi batas tanggal semester.');
           if (showNotification) {
-            setSaveNotification('Pencarian AI menemukan sumber nasional sebagai referensi, tetapi belum menemukan Kalender Pendidikan daerah.');
+            setSaveNotification('Acuan Nasional tersedia — klik "Gunakan sebagai Acuan" untuk menerapkan.');
             setTimeout(() => setSaveNotification(null), 4000);
           }
         } else {
-          onlineSuccess = true;
-          setAiSearchStatus('SUCCESS');
-          setOnlineSearchError(null);
-          setWorkflowStatus('UNRESOLVED');
-          setResolutionMessage(`Sumber resmi ${candidateLevel === 'REGENCY' ? 'Kabupaten/Kota' : 'Provinsi'} ditemukan — tinjau sebelum digunakan.`);
+          setResolutionMessage(`Sumber acuan ${candidateLevel === 'REGENCY' ? 'Kabupaten/Kota' : 'Provinsi'} ditemukan — tinjau sebelum digunakan.`);
           if (showNotification) {
-            setSaveNotification('Sumber resmi ditemukan online — klik "Gunakan sebagai Acuan" untuk menerapkan.');
+            setSaveNotification('Sumber acuan ditemukan online — klik "Gunakan sebagai Acuan" untuk menerapkan.');
             setTimeout(() => setSaveNotification(null), 4000);
           }
-          return;
         }
+        return;
       } else {
         const diagReason = onlineRes.diagnostic?.reason;
         const status = mapDiagnosticToSearchStatus(diagReason);
@@ -1047,23 +1045,37 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
                 <div className="flex items-center gap-2">
                   <span className="font-bold text-amber-900">
                     {onlineDiscovery.sourceLevel === 'NATIONAL'
-                      ? 'Sumber nasional ditemukan sebagai referensi. Kalender semester daerah belum ditemukan.'
-                      : 'Hasil Pencarian — Sumber Resmi Ditemukan'}
+                      ? 'Acuan Nasional (SKB 3 Menteri) — Sumber nasional ditemukan sebagai referensi. Kalender semester daerah belum ditemukan.'
+                      : 'Hasil Pencarian — Sumber Acuan Ditemukan'}
                   </span>
                   <span className="px-2 py-0.5 bg-amber-200 text-amber-900 rounded font-semibold text-[10px]">
                     {onlineDiscovery.sourceLevel}
                   </span>
-                </div>
-                {onlineDiscovery.sourceLevel !== 'NATIONAL' && (
-                  <button
-                    type="button"
-                    onClick={() => handleApplyOnlineCandidate(onlineDiscovery)}
-                    className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded text-xs transition-colors cursor-pointer"
+                  <span
+                    className={`px-2 py-0.5 rounded font-semibold text-[10px] border ${
+                      onlineDiscovery.authorityType === 'OFFICIAL'
+                        ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                        : 'bg-amber-100 text-amber-800 border-amber-300'
+                    }`}
                   >
-                    Gunakan sebagai Acuan
-                  </button>
-                )}
+                    {onlineDiscovery.authorityType === 'OFFICIAL' ? 'Resmi' : 'Nonresmi — Harap Ditinjau'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleApplyOnlineCandidate(onlineDiscovery)}
+                  className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded text-xs transition-colors cursor-pointer"
+                >
+                  Gunakan sebagai Acuan
+                </button>
               </div>
+
+              {onlineDiscovery.authorityType === 'NON_OFFICIAL' && (
+                <div className="p-2 bg-amber-100/70 border border-amber-300 rounded text-[11px] text-amber-900 font-medium">
+                  Sumber ini bukan situs resmi pemerintah. Data telah dicocokkan dengan wilayah dan tahun ajaran. Tinjau sumber sebelum mengonfirmasi kalender.
+                </div>
+              )}
+
               <div className="text-slate-700 text-[11px] space-y-0.5">
                 <p>
                   <strong>Level Sumber:</strong> {onlineDiscovery.sourceLevel === 'REGENCY' ? 'KABUPATEN/KOTA' : onlineDiscovery.sourceLevel === 'PROVINCE' ? 'PROVINSI' : 'NASIONAL'}
@@ -1089,7 +1101,7 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
                   </p>
                 )}
                 <p className="flex items-center gap-1">
-                  <strong>Sumber Resmi:</strong>{' '}
+                  <strong>Sumber Acuan:</strong>{' '}
                   <a
                     href={onlineDiscovery.sourceUrl}
                     target="_blank"
