@@ -47,7 +47,17 @@ export interface PlanningBaselineResult {
 
 export function resolvePlanningBaseline(params: ResolvePlanningBaselineParams): PlanningBaselineResult {
   const normYear = (params.academicYear || '2026/2027').trim();
-  const baseline = CALENDAR_PLANNING_BASELINES[normYear] || CALENDAR_PLANNING_BASELINES['2026/2027'];
+  const baseline = CALENDAR_PLANNING_BASELINES[normYear];
+
+  if (!baseline) {
+    return {
+      startDate: '',
+      endDate: '',
+      schoolDaysPerWeek: 5,
+      label: 'Default tanggal belum tersedia untuk tahun ajaran ini. Silakan gunakan sumber daerah atau masukkan tanggal perencanaan.',
+      isBaselineAvailable: false,
+    };
+  }
 
   const semStr = String(params.semester || '1').toLowerCase();
   const isSem2 = semStr === '2' || semStr.includes('genap') || semStr.startsWith('2');

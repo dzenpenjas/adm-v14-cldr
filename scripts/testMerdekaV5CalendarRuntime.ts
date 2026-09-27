@@ -12,7 +12,13 @@ import {
 import { getRuntimeContextV5 } from '../src/services/runtimeV5';
 import { AcademicCalendar, CalendarDay } from '../src/types';
 import { mapDiagnosticToSearchStatus } from '../src/components/administration/TimePlanningManager';
-import { projectCandidateEventsToCalendarDays } from '../src/services/calendarResolver';
+import {
+  projectCandidateEventsToCalendarDays,
+  generateEffectiveCalendarDays,
+  confirmCalendarWorkflow,
+  projectNationalBaseToSemesterDraft,
+} from '../src/services/calendarResolver';
+import { calculateEffectiveDays, calculateEffectiveWeeks } from '../src/services/jpEngine';
 import { CalendarSourceCandidate } from '../src/services/calendarProvider';
 
 console.log('=== RUNNING AUDIT: MERDEKA V5 ACADEMIC CALENDAR RUNTIME (B.4.1) ===\n');
@@ -761,6 +767,193 @@ runTest('DF. Kurikulum Merdeka displays "Alokasi ATP ke semester belum disusun."
     tpmSource.includes('isK13Curriculum && jpDifference !== null && jpDifference < 0'),
     'Discrepancy warnings must be restricted to K13 curriculum'
   );
+});
+
+// -----------------------------------------------------------------------------
+// TEST DI: Generated baseline survives Confirm preparation
+// -----------------------------------------------------------------------------
+runTest('DI. Generated baseline ordinary days survive Confirm preparation without being dropped', () => {
+  const generatedDays = generateEffectiveCalendarDays({
+    startDate: '2026-07-13',
+    endDate: '2026-12-18',
+    schoolDaysPerWeek: 5,
+    calendarId: 'cal-di',
+    academicYear: '2026/2027',
+  });
+
+  const normalMon = generatedDays.find((d) => d.date === '2026-07-20');
+  assert.ok(normalMon, 'Ordinary Monday 2026-07-20 must exist in generated baseline');
+  assert.strictEqual(normalMon.status, 'effective');
+  assert.strictEqual(normalMon.sourceLayer, 'GENERATED_EFFECTIVE_BASELINE');
+
+  // Simulate confirm flow: if source is NATIONAL and baseline is generated, we keep days directly
+  const confirmedRes = confirmCalendarWorkflow({
+    id: 'cal-di',
+    academicSettingId: 'setting-di',
+    academicYear: '2026/2027',
+    semester: '1',
+    startDate: '2026-07-13',
+    endDate: '2026-12-18',
+    schoolDaysPerWeek: 5,
+    sourceType: 'NATIONAL_HOLIDAY_OVERLAY',
+    workflowStatus: 'CONFIRMED',
+    updatedAt: new Date().toISOString(),
+  }, generatedDays);
+
+  const normalMonAfterConfirm = confirmedRes.days.find((d) => d.date === '2026-07-20');
+  assert.ok(normalMonAfterConfirm, 'Ordinary Monday 2026-07-20 must survive confirm flow');
+  assert.strictEqual(normalMonAfterConfirm.status, 'effective');
+  assert.strictEqual(normalMonAfterConfirm.sourceLayer, 'GENERATED_EFFECTIVE_BASELINE');
+});
+
+// -----------------------------------------------------------------------------
+// TEST DJ: Full Generate -> Confirm -> V5 -> Reload
+// -----------------------------------------------------------------------------
+runTest('DJ. Full calendar lifecycle persists and reloads correctly with identical HE/ME and zero unknownDays', () => {
+  mockStorage.clear();
+
+  // Create standard school and profile
+  const school = createSchoolV5({
+    name: 'SD Maju Jaya',
+    npsn: '12345678',
+    address: 'Jl. Tangerang',
+    village: 'Kelurahan A',
+    district: 'Tangerang',
+    regency: 'Kota Tangerang',
+    province: 'Banten',
+    principalName: 'Kepala Sekolah',
+    principalNip: '197001011995031002',
+  });
+
+  const profile = createProfileV5({
+    name: 'Guru Penjas',
+    schoolId: school.id,
+    nip: '198501012010011003',
+    status: 'PNS',
+    defaultSubject: 'Matematika',
+    defaultLevel: 'SD',
+  });
+
+  const hierarchy = createYearHierarchyV5({
+    profileId: profile.id,
+    schoolId: school.id,
+    academicYear: '2026/2027',
+    curriculumType: 'KURIKULUM_MERDEKA',
+    level: 'SD',
+    grade: 'Fase A / Kelas 1',
+    subject: 'Matematika',
+  });
+
+  const sem1 = hierarchy.semesterPlans[0];
+
+  // 1. Generate effective days from baseline
+  const generatedDays = generateEffectiveCalendarDays({
+    startDate: '2026-07-13',
+    endDate: '2026-12-18',
+    schoolDaysPerWeek: 5,
+    calendarId: `cal-${sem1.id}`,
+    academicYear: '2026/2027',
+  });
+
+  const calObj: AcademicCalendar = {
+    id: `cal-${sem1.id}`,
+    academicSettingId: sem1.id,
+    academicYear: '2026/2027',
+    semester: '1 (Ganjil)',
+    startDate: '2026-07-13',
+    endDate: '2026-12-18',
+    schoolDaysPerWeek: 5,
+    sourceType: 'NATIONAL_HOLIDAY_OVERLAY',
+    workflowStatus: 'CONFIRMED',
+    updatedAt: new Date().toISOString(),
+  };
+
+  // 2. Confirm and Save to V5
+  const confirmed = confirmCalendarWorkflow(calObj, generatedDays);
+  saveAcademicCalendarV5(sem1.id, { calendar: confirmed.calendar, days: confirmed.days });
+
+  // 3. Set active IDs and Reload from V5 using getRuntimeContextV5()
+  const stateLoaded = loadStorageV5();
+  stateLoaded.activeProfileId = profile.id;
+  stateLoaded.activeYearPlanId = hierarchy.yearPlan.id;
+  stateLoaded.activeSemesterPlanId = sem1.id;
+  saveStorageV5(stateLoaded);
+
+  const runtimeCtx = getRuntimeContextV5();
+
+  assert.ok(runtimeCtx.semesterData?.academicCalendar, 'Calendar must be active after load');
+  const loadedCal = runtimeCtx.semesterData.academicCalendar.calendar;
+  assert.strictEqual(loadedCal.startDate, '2026-07-13');
+  assert.strictEqual(loadedCal.endDate, '2026-12-18');
+  assert.strictEqual(loadedCal.schoolDaysPerWeek, 5);
+
+  const loadedDays = runtimeCtx.semesterData.academicCalendar.days;
+  assert.ok(loadedDays.length > 50, 'Must reload all generated days');
+
+  const ordinaryMon = loadedDays.find(d => d.date === '2026-07-20');
+  assert.ok(ordinaryMon, 'Ordinary Monday 2026-07-20 must exist after reload');
+  assert.strictEqual(ordinaryMon.status, 'effective');
+  assert.strictEqual(ordinaryMon.sourceLayer, 'GENERATED_EFFECTIVE_BASELINE');
+
+  const effObj = calculateEffectiveDays({ startDate: '2026-07-13', endDate: '2026-12-18', schoolDaysPerWeek: 5 }, loadedDays);
+  assert.ok(effObj.effectiveLearningDays > 0, 'Effective learning days must be > 0');
+  assert.strictEqual(effObj.unknownDays, 0, 'unknownDays must be exactly 0 after reload');
+
+  const weekObj = calculateEffectiveWeeks(effObj.effectiveLearningDays, 5);
+  assert.ok(weekObj.effectiveWeeksRounded > 0, 'Effective weeks must be > 0');
+});
+
+// -----------------------------------------------------------------------------
+// TEST DK: Generate button remains explicit
+// -----------------------------------------------------------------------------
+runTest('DK. handleAutoResolve does not call generateEffectiveCalendarDays automatically for NATIONAL fallback', () => {
+  // Extract handleAutoResolve body
+  const match = tpmSource.match(/const handleAutoResolve = [\s\S]*?\n  \};/);
+  assert.ok(match, 'handleAutoResolve function must exist');
+  const fnBody = match[0];
+
+  // Under NATIONAL fallback, we must use projectNationalBaseToSemesterDraft instead of generateEffectiveCalendarDays
+  assert.ok(
+    fnBody.includes('projectNationalBaseToSemesterDraft('),
+    'handleAutoResolve must call projectNationalBaseToSemesterDraft for NATIONAL fallback'
+  );
+  // It shouldn't automatically generate full weekdays under the National section
+  const nationalSection = fnBody.slice(fnBody.indexOf("candidateLevel === 'NATIONAL'"));
+  assert.ok(
+    !nationalSection.includes('generateEffectiveCalendarDays('),
+    'NATIONAL fallback block within handleAutoResolve must NOT automatically trigger generateEffectiveCalendarDays'
+  );
+});
+
+// -----------------------------------------------------------------------------
+// TEST DL: Existing manual override survives Confirm
+// -----------------------------------------------------------------------------
+runTest('DL. Manual SCHOOL_OVERRIDE remains highest priority and survives Confirm', () => {
+  const manualDay: CalendarDay = {
+    id: 'manual-over',
+    academicCalendarId: 'cal-dl',
+    date: '2026-08-17',
+    status: 'SCHOOL_EVENT',
+    notes: 'Upacara Mandiri',
+    sourceType: 'SCHOOL_OVERRIDE',
+    sourceLayer: 'SCHOOL_OVERRIDE',
+    isOverridden: true,
+    category: 'SCHOOL_EVENT',
+  };
+
+  const generated = generateEffectiveCalendarDays({
+    startDate: '2026-07-13',
+    endDate: '2026-12-18',
+    schoolDaysPerWeek: 5,
+    calendarId: 'cal-dl',
+    academicYear: '2026/2027',
+    existingDays: [manualDay],
+  });
+
+  const targetDay = generated.find(d => d.date === '2026-08-17');
+  assert.ok(targetDay, 'Target day 2026-08-17 must exist');
+  assert.strictEqual(targetDay.sourceLayer, 'SCHOOL_OVERRIDE', 'SCHOOL_OVERRIDE must override national holiday on same day');
+  assert.strictEqual(targetDay.notes, 'Upacara Mandiri');
 });
 
 console.log(`\nAll ${totalTests} Merdeka V5 Academic Calendar Runtime audit tests PASSED successfully!\n`);

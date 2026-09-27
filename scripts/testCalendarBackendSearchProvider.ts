@@ -3694,6 +3694,42 @@ async function main() {
     assert.ok(weekRes.effectiveWeeksRounded > 0, 'effectiveWeeksRounded must be > 0');
   });
 
+  // =========================================================================
+  // TEST DG: Unknown Academic Year Must Not Reuse 2026/2027
+  // =========================================================================
+  await runTest('DG. Unknown academic year must not reuse 2026/2027 baseline dates', () => {
+    const base = resolvePlanningBaseline({ academicYear: '2027/2028', semester: '1' });
+    assert.strictEqual(base.isBaselineAvailable, false);
+    assert.strictEqual(base.startDate, '');
+    assert.strictEqual(base.endDate, '');
+  });
+
+  // =========================================================================
+  // TEST DH: NATIONAL Provenance Is Kept as National Overlay
+  // =========================================================================
+  await runTest('DH. NATIONAL candidate events are mapped exclusively as NATIONAL_OVERLAY and never REGIONAL_BASE', () => {
+    const natCandidate = buildNationalBaseCandidate('2026/2027');
+    const days = generateEffectiveCalendarDays({
+      startDate: '2026-07-13',
+      endDate: '2026-12-18',
+      schoolDaysPerWeek: 5,
+      calendarId: 'cal-dh',
+      academicYear: '2026/2027',
+      candidate: natCandidate,
+    });
+
+    const aug17 = days.find((d) => d.date === '2026-08-17');
+    assert.ok(aug17, 'Independence day 2026-08-17 must exist');
+    assert.strictEqual(aug17.sourceLayer, 'NATIONAL_OVERLAY');
+    assert.strictEqual(aug17.sourceType, 'NATIONAL_HOLIDAY_OVERLAY');
+    assert.strictEqual(aug17.category, 'NATIONAL_HOLIDAY');
+    assert.strictEqual(aug17.status, 'holiday');
+
+    // No REGIONAL_BASE should exist
+    const hasRegionalBase = days.some((d) => d.sourceLayer === 'REGIONAL_BASE');
+    assert.strictEqual(hasRegionalBase, false, 'Should not have any regional base layer events for national candidate');
+  });
+
   console.log(`\n========================================`);
   console.log(`ALL BACKEND CALENDAR SEARCH PROVIDER TESTS PASSED (${passedTests}/${totalTests})`);
   console.log(`========================================\n`);

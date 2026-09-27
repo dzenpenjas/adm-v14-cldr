@@ -619,72 +619,74 @@ export function projectCandidateEventsToCalendarDays(
   const nowIso = new Date().toISOString();
 
   // 1. Map candidate events from official source
-  for (const ev of candidate.events || []) {
-    const evEnd = ev.endDate && ev.endDate >= ev.startDate ? ev.endDate : ev.startDate;
-    const rangeDates = getDateRangeArray(ev.startDate, evEnd);
+  if (candidate && candidate.sourceLevel !== 'NATIONAL' && Array.isArray(candidate.events)) {
+    for (const ev of candidate.events) {
+      const evEnd = ev.endDate && ev.endDate >= ev.startDate ? ev.endDate : ev.startDate;
+      const rangeDates = getDateRangeArray(ev.startDate, evEnd);
 
-    let mappedStatus: CalendarDay['status'] = 'other';
-    let mappedCategory: CalendarDay['category'] = 'OTHER';
+      let mappedStatus: CalendarDay['status'] = 'other';
+      let mappedCategory: CalendarDay['category'] = 'OTHER';
 
-    switch (ev.category) {
-      case 'HOLIDAY':
-        mappedStatus = 'holiday';
-        mappedCategory = 'OTHER';
-        break;
-      case 'SEMESTER_BREAK':
-        mappedStatus = 'BREAK';
-        mappedCategory = 'SEMESTER_BREAK';
-        break;
-      case 'MID_SEMESTER_BREAK':
-        mappedStatus = 'BREAK';
-        mappedCategory = 'MID_SEMESTER_BREAK';
-        break;
-      case 'ASSESSMENT':
-        mappedStatus = 'ASSESSMENT';
-        mappedCategory = 'ASSESSMENT';
-        break;
-      case 'SCHOOL_EVENT':
-        mappedStatus = 'SCHOOL_EVENT';
-        mappedCategory = 'SCHOOL_EVENT';
-        break;
-      case 'OTHER':
-      default:
-        mappedStatus = 'other';
-        mappedCategory = 'OTHER';
-        break;
-    }
+      switch (ev.category) {
+        case 'HOLIDAY':
+          mappedStatus = 'holiday';
+          mappedCategory = 'OTHER';
+          break;
+        case 'SEMESTER_BREAK':
+          mappedStatus = 'BREAK';
+          mappedCategory = 'SEMESTER_BREAK';
+          break;
+        case 'MID_SEMESTER_BREAK':
+          mappedStatus = 'BREAK';
+          mappedCategory = 'MID_SEMESTER_BREAK';
+          break;
+        case 'ASSESSMENT':
+          mappedStatus = 'ASSESSMENT';
+          mappedCategory = 'ASSESSMENT';
+          break;
+        case 'SCHOOL_EVENT':
+          mappedStatus = 'SCHOOL_EVENT';
+          mappedCategory = 'SCHOOL_EVENT';
+          break;
+        case 'OTHER':
+        default:
+          mappedStatus = 'other';
+          mappedCategory = 'OTHER';
+          break;
+      }
 
-    const regionalProvenance: CalendarProvenance = {
-      sourceType: 'REGIONAL_EDUCATION_CALENDAR',
-      sourceName: candidate.documentTitle,
-      sourceAuthority: candidate.authority,
-      sourceUrl: candidate.sourceUrl,
-      region: candidate.province || 'Daerah',
-      academicYear: candidate.academicYear,
-      documentNumber: candidate.documentNumber,
-      documentTitle: candidate.documentTitle,
-      publicationDate: candidate.publicationDate,
-      effectiveDate: candidate.effectiveDate,
-      retrievedAt: nowIso,
-    };
+      const regionalProvenance: CalendarProvenance = {
+        sourceType: 'REGIONAL_EDUCATION_CALENDAR',
+        sourceName: candidate.documentTitle,
+        sourceAuthority: candidate.authority,
+        sourceUrl: candidate.sourceUrl,
+        region: candidate.province || 'Daerah',
+        academicYear: candidate.academicYear,
+        documentNumber: candidate.documentNumber,
+        documentTitle: candidate.documentTitle,
+        publicationDate: candidate.publicationDate,
+        effectiveDate: candidate.effectiveDate,
+        retrievedAt: nowIso,
+      };
 
-    for (const d of rangeDates) {
-      if (d >= startDate && d <= endDate) {
-        daysMap.set(d, {
-          id: `day-reg-${d}`,
-          academicCalendarId: calendarId,
-          date: d,
-          status: mappedStatus,
-          notes: ev.name,
-          sourceType: 'REGIONAL_EDUCATION_CALENDAR',
-          sourceName: candidate.documentTitle,
-          sourceAuthority: candidate.authority,
-          sourceDocumentNumber: candidate.documentNumber || undefined,
-          sourceUrl: candidate.sourceUrl,
-          sourceLayer: 'REGIONAL_BASE',
-          sourceProvenances: [regionalProvenance],
-          category: mappedCategory,
-        });
+      for (const d of rangeDates) {
+        if (d >= startDate && d <= endDate) {
+          daysMap.set(d, {
+            id: `day-reg-${d}`,
+            academicCalendarId: calendarId,
+            date: d,
+            status: mappedStatus,
+            notes: ev.name,
+            sourceType: 'REGIONAL_EDUCATION_CALENDAR',
+            sourceName: candidate.documentTitle,
+            sourceAuthority: candidate.authority,
+            sourceDocumentNumber: candidate.documentNumber || undefined,
+            sourceUrl: candidate.sourceUrl,
+            sourceLayer: 'REGIONAL_BASE',
+            sourceProvenances: [regionalProvenance],
+            category: mappedCategory,
+          });
+        }
       }
     }
   }
@@ -811,7 +813,7 @@ export function generateEffectiveCalendarDays(
   }
 
   // 2. Overlay regional candidate events if available
-  if (candidate && Array.isArray(candidate.events)) {
+  if (candidate && candidate.sourceLevel !== 'NATIONAL' && Array.isArray(candidate.events)) {
     const regProv: CalendarProvenance = {
       sourceType: 'REGIONAL_EDUCATION_CALENDAR',
       sourceName: candidate.documentTitle,

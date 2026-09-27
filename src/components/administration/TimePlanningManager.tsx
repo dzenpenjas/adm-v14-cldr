@@ -393,14 +393,12 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
           setSourceDocumentNumber(onlineRes.selectedSource.documentNumber || '');
           setSourceUrl(onlineRes.selectedSource.sourceUrl);
 
-          const projectedDays = generateEffectiveCalendarDays({
-            startDate: targetStart,
-            endDate: targetEnd,
-            schoolDaysPerWeek: targetDays,
-            calendarId: calendar?.id || `cal-${academicSetting.id}`,
-            academicYear: academicSetting.academicYear || academicYear || onlineRes.selectedSource.academicYear,
-            existingDays: days,
+          const projectedDays = projectNationalBaseToSemesterDraft({
             candidate: onlineRes.selectedSource,
+            academicYear: academicSetting.academicYear || academicYear || onlineRes.selectedSource.academicYear,
+            semester: semester || '1',
+            calendarId: calendar?.id || `cal-${academicSetting.id}`,
+            existingDays: days,
           });
           setDays(projectedDays);
 
@@ -511,14 +509,12 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
         setSourceDocumentNumber(natCandidate.documentNumber || '');
         setSourceUrl(natCandidate.sourceUrl);
 
-        const projectedDays = generateEffectiveCalendarDays({
-          startDate: targetStart,
-          endDate: targetEnd,
-          schoolDaysPerWeek: targetDays,
-          calendarId: calendar?.id || `cal-${academicSetting.id}`,
-          academicYear: academicSetting.academicYear || academicYear || natCandidate.academicYear,
-          existingDays: days,
+        const projectedDays = projectNationalBaseToSemesterDraft({
           candidate: natCandidate,
+          academicYear: academicSetting.academicYear || academicYear || natCandidate.academicYear,
+          semester: semester || '1',
+          calendarId: calendar?.id || `cal-${academicSetting.id}`,
+          existingDays: days,
         });
         setDays(projectedDays);
 
@@ -689,21 +685,36 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
 
     // Project candidate / national base events if online discovery candidate was selected
     let finalDays = days;
-    if (onlineDiscovery) {
-      const candidateForProjection = onlineDiscovery.sourceLevel === 'NATIONAL'
-        ? { ...onlineDiscovery, events: undefined }
-        : onlineDiscovery;
+    const isNational = sourceType === 'NATIONAL_HOLIDAY_OVERLAY' || (onlineDiscovery && onlineDiscovery.sourceLevel === 'NATIONAL');
 
-      finalDays = projectCandidateEventsToCalendarDays({
-        candidate: candidateForProjection,
+    if (isNational) {
+      // For NATIONAL, if they have generated, use days directly. Otherwise, generate it.
+      const hasGeneratedBaseline = days.some(d => d.sourceLayer === 'GENERATED_EFFECTIVE_BASELINE');
+      if (!hasGeneratedBaseline) {
+        finalDays = generateEffectiveCalendarDays({
+          startDate,
+          endDate,
+          schoolDaysPerWeek,
+          calendarId: calendar?.id || `cal-${academicSetting.id}`,
+          academicYear: academicSetting.academicYear || academicYear,
+          existingDays: days,
+          candidate: onlineDiscovery || undefined,
+        });
+      }
+    } else {
+      // For regional, run generateEffectiveCalendarDays to keep generated baseline + manual overrides intact,
+      // and overlay regional events correctly.
+      finalDays = generateEffectiveCalendarDays({
         startDate,
         endDate,
+        schoolDaysPerWeek,
         calendarId: calendar?.id || `cal-${academicSetting.id}`,
+        academicYear: academicSetting.academicYear || academicYear || (onlineDiscovery ? onlineDiscovery.academicYear : undefined),
         existingDays: days,
-        academicYear: academicSetting.academicYear || academicYear || onlineDiscovery.academicYear,
+        candidate: onlineDiscovery || undefined,
       });
-      setDays(finalDays);
     }
+    setDays(finalDays);
 
     const res = confirmCalendarWorkflow(currentCal, finalDays);
     setWorkflowStatus('CONFIRMED');
@@ -1567,9 +1578,20 @@ export const TimePlanningManager: React.FC<TimePlanningManagerProps> = ({
                 </div>
               </div>
 
-              <p className="text-[11px] text-slate-500 italic mt-1">
-                Default Perencanaan 2026/2027 — dapat disesuaikan dengan Kalender Pendidikan daerah/sekolah.
-              </p>
+              {(() => {
+                const currentBaseline = resolvePlanningBaseline({
+                  academicYear: academicSetting.academicYear || academicYear,
+                  semester: semester || '1',
+                  province: selectedProvince || school?.province,
+                });
+                return (
+                  <p className="text-[11px] text-slate-500 italic mt-1">
+                    {currentBaseline.isBaselineAvailable
+                      ? `${currentBaseline.label} — dapat disesuaikan dengan Kalender Pendidikan daerah/sekolah.`
+                      : currentBaseline.label}
+                  </p>
+                );
+              })()}
 
               <div>
                 <div className="flex items-center justify-between mb-1">
